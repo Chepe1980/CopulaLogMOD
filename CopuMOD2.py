@@ -2,6 +2,7 @@
 Streamlit App para Análisis de Dependencia en Datos de Pozo
 ===========================================================
 Con regresión cuantil basada en cópulas, estimación de propiedades y box plots
+VERSIÓN CORREGIDA
 """
 
 import streamlit as st
@@ -307,24 +308,6 @@ class CopulaQuantileRegression:
     def estimate_property_jpoint(self, x_train, y_train, x_test, quantile=0.5, copula_type='best'):
         """
         Estima una propiedad usando cópula de punto de unión (J-point copula)
-        
-        Parameters:
-        -----------
-        x_train : array
-            Variable independiente de entrenamiento (ej. Vp)
-        y_train : array
-            Variable dependiente de entrenamiento (ej. Phie)
-        x_test : array
-            Valores de X para los que se quiere estimar Y
-        quantile : float
-            Cuantil a estimar (0.5 para mediana)
-        copula_type : str
-            Tipo de cópula a usar
-            
-        Returns:
-        --------
-        y_estimated : array
-            Valores estimados de Y
         """
         # Calcular cópula
         u_train = self.empirical_cdf(x_train)
@@ -455,7 +438,7 @@ class WellLogDependenceAnalyzer:
         
         return y_estimated, copula, x, y
     
-    def create_estimation_plot(self, source_col, target_col, y_estimated, x, y, depth=None):
+    def create_estimation_plot(self, source_col, target_col, y_estimated, x, y, quantile=0.5, copula_type='best'):
         """
         Crea gráfico de comparación entre valores reales y estimados
         """
@@ -511,6 +494,7 @@ class WellLogDependenceAnalyzer:
         # Línea de cero en box plot
         fig.add_hline(y=0, line_dash="dash", line_color="red", row=1, col=2)
         
+        # Corregir: usar variables pasadas como parámetros
         fig.update_layout(
             title=f'Estimación de {target_col} usando {source_col}<br>Método: Cópula {copula_type.capitalize()} (Cuantil {quantile*100:.0f}%)',
             height=500,
@@ -1118,7 +1102,7 @@ def main():
                 
                 # Gráfico de comparación Real vs Estimado
                 fig_comp, _, _, _, _ = analyzer.create_estimation_plot(
-                    source_var, target_var, y_estimated, x_data, y_data
+                    source_var, target_var, y_estimated, x_data, y_data, quantile_est, copula_type_est
                 )
                 st.plotly_chart(fig_comp, use_container_width=True)
                 
