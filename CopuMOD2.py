@@ -1,8 +1,8 @@
 """
 Streamlit App para Análisis de Dependencia en Datos de Pozo
 ===========================================================
-Con regresión cuantil basada en cópulas, estimación de propiedades y box plots
-VERSIÓN CORREGIDA
+Con regresión cuantil basada en cópulas y estimación multivariada
+VERSIÓN MEJORADA CON ESTIMACIÓN MULTIVARIADA
 """
 
 import streamlit as st
@@ -12,12 +12,17 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 from scipy.stats import norm, kendalltau, spearmanr, pearsonr, gaussian_kde
-from scipy.interpolate import UnivariateSpline, interp1d, interp2d
+from scipy.interpolate import UnivariateSpline, interp1d, interp2d, RegularGridInterpolator
 from scipy.optimize import minimize, brentq
 from scipy.spatial import cKDTree
+from scipy.spatial.distance import cdist
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -101,6 +106,98 @@ def interpret_copula(cop):
         else:
             return f"La cópula Frank (θ={cop['theta']:.2f}) muestra dependencia moderada y simétrica."
     return ""
+
+
+class MultivariateCopulaEstimator:
+    """
+    Clase para estimación multivariada usando cópulas y métodos de aprendizaje automático
+    """
+    
+    def __init__(self):
+        self.models = {}
+        self.scalers = {}
+        
+    def estimate_with_random_forest(self, X_train, y_train, X_test, **kwargs):
+        """
+        Estimación usando Random Forest
+        """
+        rf = RandomForestRegressor(
+            n_estimators=kwargs.get('n_estimators', 100),
+            max_depth=kwargs.get('max_depth', 10),
+            random_state=42,
+            n_jobs=-1
+        )
+        rf.fit(X_train, y_train)
+        y_pred = rf.predict(X_test)
+        return y_pred, rf
+    
+    def estimate_with_gradient_boosting(self, X_train, y_train, X_test, **kwargs):
+        """
+        Estimación usando Gradient Boosting
+        """
+        gb = GradientBoostingRegressor(
+            n_estimators=kwargs.get('n_estimators', 100),
+            max_depth=kwargs.get('max_depth', 5),
+            learning_rate=kwargs.get('learning_rate', 0.1),
+            random_state=42
+        )
+        gb.fit(X_train, y_train)
+        y_pred = gb.predict(X_test)
+        return y_pred, gb
+    
+    def estimate_with_knn_copula(self, X_train, y_train, X_test, n_neighbors=5):
+        """
+        Estimación usando KNN con pesos basados en cópula
+        """
+        # Normalizar datos
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Usar KNN con pesos basados en distancia
+        tree = cKDTree(X_train_scaled)
+        y_pred = []
+        
+        for x_test in X_test_scaled:
+            # Encontrar vecinos
+            distances, indices = tree.query(x_test.reshape(1, -1), k=n_neighbors)
+            
+            # Calcular pesos (inverso de la distancia)
+            weights = 1 / (distances[0] + 1e-6)
+            weights = weights / weights.sum()
+            
+            # Predicción ponderada
+            pred = np.sum(weights * y_train[indices[0]])
+            y_pred.append(pred)
+        
+        return np.array(y_pred), scaler
+    
+    def estimate_with_ensemble(self, X_train, y_train, X_test, methods=['rf', 'gb', 'knn']):
+        """
+        Estimación usando ensemble de múltiples métodos
+        """
+        predictions = []
+        models = []
+        
+        if 'rf' in methods:
+            y_pred_rf, model_rf = self.estimate_with_random_forest(X_train, y_train, X_test)
+            predictions.append(y_pred_rf)
+            models.append(('Random Forest', model_rf))
+        
+        if 'gb' in methods:
+            y_pred_gb, model_gb = self.estimate_with_gradient_boosting(X_train, y_train, X_test)
+            predictions.append(y_pred_gb)
+            models.append(('Gradient Boosting', model_gb))
+        
+        if 'knn' in methods:
+            y_pred_knn, scaler = self.estimate_with_knn_copula(X_train, y_train, X_test)
+            predictions.append(y_pred_knn)
+            models.append(('KNN-Copula', scaler))
+        
+        # Promedio simple
+        y_pred_ensemble = np.mean(predictions, axis=0)
+        
+        return y_pred_ensemble, models
 
 
 class CopulaQuantileRegression:
@@ -200,15 +297,6 @@ class CopulaQuantileRegression:
         
         return best_copula
     
-    def _gaussian_copula_cdf(self, u, v, rho):
-        """CDF de la cópula Gaussiana"""
-        from scipy.stats import multivariate_normal
-        mean = [0, 0]
-        cov = [[1, rho], [rho, 1]]
-        z1 = norm.ppf(u)
-        z2 = norm.ppf(v)
-        return multivariate_normal.cdf([z1, z2], mean=mean, cov=cov)
-    
     def _gaussian_log_likelihood(self, u, v, rho):
         """Log-likelihood para cópula Gaussiana"""
         n = len(u)
@@ -216,12 +304,6 @@ class CopulaQuantileRegression:
         z2 = norm.ppf(v)
         log_lik = -n/2 * np.log(1 - rho**2) - np.sum((z1**2 + z2**2 - 2*rho*z1*z2) / (2*(1 - rho**2)))
         return log_lik
-    
-    def _clayton_copula_cdf(self, u, v, theta):
-        """CDF de la cópula Clayton"""
-        if theta == 0:
-            return u * v
-        return (u**(-theta) + v**(-theta) - 1)**(-1/theta)
     
     def _clayton_log_likelihood(self, u, v, theta):
         """Log-likelihood para cópula Clayton"""
@@ -231,12 +313,6 @@ class CopulaQuantileRegression:
         log_lik = np.sum(np.log((1 + theta) * (u * v)**(-theta-1) * 
                                 (u**(-theta) + v**(-theta) - 1)**(-1/theta - 2)))
         return log_lik
-    
-    def _gumbel_copula_cdf(self, u, v, theta):
-        """CDF de la cópula Gumbel"""
-        if theta == 1:
-            return u * v
-        return np.exp(-((-np.log(u))**theta + (-np.log(v))**theta)**(1/theta))
     
     def _gumbel_log_likelihood(self, u, v, theta):
         """Log-likelihood para cópula Gumbel"""
@@ -249,12 +325,6 @@ class CopulaQuantileRegression:
         log_lik = np.sum(np.log((s**(2/theta - 2) * (log_u * log_v)**(theta-1) *
                                 (1 + (theta-1) * s**(-1/theta))) / (u * v)))
         return log_lik
-    
-    def _frank_copula_cdf(self, u, v, theta):
-        """CDF de la cópula Frank"""
-        if theta == 0:
-            return u * v
-        return -1/theta * np.log(1 + (np.exp(-theta*u) - 1) * (np.exp(-theta*v) - 1) / (np.exp(-theta) - 1))
     
     def _frank_log_likelihood(self, u, v, theta):
         """Log-likelihood para cópula Frank"""
@@ -305,38 +375,6 @@ class CopulaQuantileRegression:
         
         return quantile_results
     
-    def estimate_property_jpoint(self, x_train, y_train, x_test, quantile=0.5, copula_type='best'):
-        """
-        Estima una propiedad usando cópula de punto de unión (J-point copula)
-        """
-        # Calcular cópula
-        u_train = self.empirical_cdf(x_train)
-        v_train = self.empirical_cdf(y_train)
-        
-        if copula_type == 'best':
-            copula = self.select_best_copula(u_train, v_train)
-        else:
-            if copula_type == 'gaussian':
-                copula = self.fit_gaussian_copula(u_train, v_train)
-            elif copula_type == 'clayton':
-                copula = self.fit_clayton_copula(u_train, v_train)
-            elif copula_type == 'gumbel':
-                copula = self.fit_gumbel_copula(u_train, v_train)
-            elif copula_type == 'frank':
-                copula = self.fit_frank_copula(u_train, v_train)
-            else:
-                copula = self.fit_gaussian_copula(u_train, v_train)
-        
-        # Estimar para cada valor de x_test
-        y_estimated = []
-        for x_val in x_test:
-            u_val = self.empirical_cdf(np.array([x_val]))[0]
-            v_q = self._find_conditional_quantile(u_val, quantile, copula)
-            y_val = self.empirical_inverse_cdf(v_q, y_train)
-            y_estimated.append(y_val)
-        
-        return np.array(y_estimated), copula
-    
     def _find_conditional_quantile(self, u, q, copula):
         """Encuentra v tal que P(V <= v | U = u) = q"""
         if copula['type'] == 'gaussian':
@@ -377,6 +415,18 @@ class CopulaQuantileRegression:
         
         else:
             return q
+    
+    def _gumbel_copula_cdf(self, u, v, theta):
+        """CDF de la cópula Gumbel"""
+        if theta == 1:
+            return u * v
+        return np.exp(-((-np.log(u))**theta + (-np.log(v))**theta)**(1/theta))
+    
+    def _frank_copula_cdf(self, u, v, theta):
+        """CDF de la cópula Frank"""
+        if theta == 0:
+            return u * v
+        return -1/theta * np.log(1 + (np.exp(-theta*u) - 1) * (np.exp(-theta*v) - 1) / (np.exp(-theta) - 1))
 
 
 class WellLogDependenceAnalyzer:
@@ -390,6 +440,7 @@ class WellLogDependenceAnalyzer:
         self.available_cols = self.data_clean.columns.tolist()
         self.correlation_matrices = {}
         self.cqr = CopulaQuantileRegression()
+        self.multivariate_estimator = MultivariateCopulaEstimator()
         
         # Detectar columna de profundidad si existe
         self.depth_col = None
@@ -426,44 +477,110 @@ class WellLogDependenceAnalyzer:
             'Kendall_p': kendall_p
         }
     
-    def estimate_property_with_copula(self, source_col, target_col, quantile=0.5, copula_type='best'):
+    def estimate_multivariate(self, target_col, feature_cols, test_size=0.2, method='ensemble'):
         """
-        Estima una propiedad usando cópula basada en la relación con otra propiedad
+        Estimación multivariada usando múltiples variables predictoras
+        
+        Parameters:
+        -----------
+        target_col : str
+            Variable objetivo a estimar
+        feature_cols : list
+            Lista de variables predictoras
+        test_size : float
+            Proporción de datos para prueba
+        method : str
+            Método de estimación: 'rf', 'gb', 'knn', 'ensemble'
         """
-        x = self.data_clean[source_col].values
+        # Preparar datos
+        X = self.data_clean[feature_cols].values
         y = self.data_clean[target_col].values
         
-        # Usar los mismos datos para entrenamiento y predicción (para comparación)
-        y_estimated, copula = self.cqr.estimate_property_jpoint(x, y, x, quantile, copula_type)
+        # Dividir datos
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42
+        )
         
-        return y_estimated, copula, x, y
+        # Entrenar y predecir
+        if method == 'rf':
+            y_pred, model = self.multivariate_estimator.estimate_with_random_forest(
+                X_train, y_train, X_test
+            )
+            method_name = "Random Forest"
+        elif method == 'gb':
+            y_pred, model = self.multivariate_estimator.estimate_with_gradient_boosting(
+                X_train, y_train, X_test
+            )
+            method_name = "Gradient Boosting"
+        elif method == 'knn':
+            y_pred, model = self.multivariate_estimator.estimate_with_knn_copula(
+                X_train, y_train, X_test
+            )
+            method_name = "KNN-Copula"
+        else:
+            y_pred, models = self.multivariate_estimator.estimate_with_ensemble(
+                X_train, y_train, X_test, methods=['rf', 'gb', 'knn']
+            )
+            method_name = "Ensemble (RF + GB + KNN)"
+        
+        # Calcular métricas
+        r2 = r2_score(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        mae = mean_absolute_error(y_test, y_pred)
+        
+        # Predecir para todos los datos
+        X_all = self.data_clean[feature_cols].values
+        if method == 'ensemble':
+            # Reentrenar ensemble con todos los datos
+            y_all_pred, _ = self.multivariate_estimator.estimate_with_ensemble(
+                X_all, y, X_all, methods=['rf', 'gb', 'knn']
+            )
+        else:
+            # Reentrenar con todos los datos
+            if method == 'rf':
+                model_full = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+            elif method == 'gb':
+                model_full = GradientBoostingRegressor(n_estimators=100, max_depth=5, random_state=42)
+            elif method == 'knn':
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X_all)
+                y_all_pred, _ = self.multivariate_estimator.estimate_with_knn_copula(
+                    X_all, y, X_all
+                )
+                return y_all_pred, y, r2, rmse, mae, method_name, feature_cols, X_all
+        
+        if method != 'knn' and method != 'ensemble':
+            model_full.fit(X_all, y)
+            y_all_pred = model_full.predict(X_all)
+        
+        return y_all_pred, y, r2, rmse, mae, method_name, feature_cols, X_all
     
-    def create_estimation_plot(self, source_col, target_col, y_estimated, x, y, quantile=0.5, copula_type='best'):
+    def create_estimation_plot(self, target_col, y_estimated, y_real, method_name, feature_cols, r2, rmse, mae):
         """
         Crea gráfico de comparación entre valores reales y estimados
         """
         fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=('Comparación: Real vs Estimado', 'Error de Predicción'),
-            specs=[[{'type': 'scatter'}, {'type': 'box'}]]
+            rows=1, cols=3,
+            subplot_titles=('Comparación: Real vs Estimado', 'Error de Predicción', 'Distribución de Errores'),
+            specs=[[{'type': 'scatter'}, {'type': 'box'}, {'type': 'histogram'}]]
         )
         
         # Gráfico de dispersión: Real vs Estimado
         fig.add_trace(
             go.Scatter(
-                x=y, y=y_estimated,
+                x=y_real, y=y_estimated,
                 mode='markers',
                 marker=dict(size=8, color='steelblue', opacity=0.6),
                 name='Datos',
-                text=[f'Real: {yi:.2f}<br>Estimado: {ye:.2f}' for yi, ye in zip(y, y_estimated)],
+                text=[f'Real: {yi:.2f}<br>Estimado: {ye:.2f}' for yi, ye in zip(y_real, y_estimated)],
                 hoverinfo='text'
             ),
             row=1, col=1
         )
         
         # Línea de identidad
-        min_val = min(y.min(), y_estimated.min())
-        max_val = max(y.max(), y_estimated.max())
+        min_val = min(y_real.min(), y_estimated.min())
+        max_val = max(y_real.max(), y_estimated.max())
         fig.add_trace(
             go.Scatter(
                 x=[min_val, max_val], y=[min_val, max_val],
@@ -474,13 +591,10 @@ class WellLogDependenceAnalyzer:
             row=1, col=1
         )
         
-        # Calcular métricas de error
-        errors = y_estimated - y
-        mae = np.mean(np.abs(errors))
-        rmse = np.sqrt(np.mean(errors**2))
-        r2 = 1 - np.sum(errors**2) / np.sum((y - np.mean(y))**2)
+        # Calcular errores
+        errors = y_estimated - y_real
         
-        # Gráfico de box plot de errores
+        # Box plot de errores
         fig.add_trace(
             go.Box(
                 y=errors,
@@ -490,13 +604,25 @@ class WellLogDependenceAnalyzer:
             ),
             row=1, col=2
         )
-        
-        # Línea de cero en box plot
         fig.add_hline(y=0, line_dash="dash", line_color="red", row=1, col=2)
         
-        # Corregir: usar variables pasadas como parámetros
+        # Histograma de errores
+        fig.add_trace(
+            go.Histogram(
+                x=errors,
+                name='Error',
+                nbinsx=30,
+                marker_color='lightblue'
+            ),
+            row=1, col=3
+        )
+        fig.add_vline(x=0, line_dash="dash", line_color="red", row=1, col=3)
+        
+        # Título
         fig.update_layout(
-            title=f'Estimación de {target_col} usando {source_col}<br>Método: Cópula {copula_type.capitalize()} (Cuantil {quantile*100:.0f}%)',
+            title=f'Estimación Multivariada de {target_col}<br>'
+                  f'Método: {method_name} | R² = {r2:.4f} | RMSE = {rmse:.4f} | MAE = {mae:.4f}<br>'
+                  f'Variables predictoras: {", ".join(feature_cols)}',
             height=500,
             showlegend=True
         )
@@ -505,10 +631,12 @@ class WellLogDependenceAnalyzer:
         fig.update_yaxes(title_text=f'{target_col} Estimado', row=1, col=1)
         fig.update_xaxes(title_text='Error', row=1, col=2)
         fig.update_yaxes(title_text='Valor', row=1, col=2)
+        fig.update_xaxes(title_text='Error', row=1, col=3)
+        fig.update_yaxes(title_text='Frecuencia', row=1, col=3)
         
-        return fig, mae, rmse, r2, errors
+        return fig
     
-    def create_depth_plot(self, target_col, y_estimated, y_real, depth):
+    def create_depth_plot(self, target_col, y_estimated, y_real, depth, r2):
         """
         Crea gráfico de profundidad vs valores reales y estimados
         """
@@ -523,7 +651,7 @@ class WellLogDependenceAnalyzer:
         fig.add_trace(go.Scatter(
             x=y_real_sorted, y=depth_sorted,
             mode='markers',
-            marker=dict(size=6, color='blue', opacity=0.6),
+            marker=dict(size=8, color='blue', opacity=0.7, symbol='circle'),
             name='Real',
             text=[f'Prof: {d:.1f}<br>Real: {yr:.2f}' for d, yr in zip(depth_sorted, y_real_sorted)],
             hoverinfo='text'
@@ -532,77 +660,46 @@ class WellLogDependenceAnalyzer:
         fig.add_trace(go.Scatter(
             x=y_est_sorted, y=depth_sorted,
             mode='markers',
-            marker=dict(size=6, color='red', opacity=0.6, symbol='x'),
+            marker=dict(size=8, color='red', opacity=0.7, symbol='x'),
             name='Estimado',
             text=[f'Prof: {d:.1f}<br>Estimado: {ye:.2f}' for d, ye in zip(depth_sorted, y_est_sorted)],
             hoverinfo='text'
         ))
         
+        # Líneas de tendencia
+        from scipy.signal import savgol_filter
+        try:
+            window = min(51, len(depth_sorted) // 10 * 2 + 1)
+            if window % 2 == 0:
+                window += 1
+            if window >= 3:
+                y_real_smooth = savgol_filter(y_real_sorted, window, 2)
+                y_est_smooth = savgol_filter(y_est_sorted, window, 2)
+                
+                fig.add_trace(go.Scatter(
+                    x=y_real_smooth, y=depth_sorted,
+                    mode='lines',
+                    line=dict(color='blue', width=2),
+                    name='Real (suavizado)'
+                ))
+                
+                fig.add_trace(go.Scatter(
+                    x=y_est_smooth, y=depth_sorted,
+                    mode='lines',
+                    line=dict(color='red', width=2, dash='dash'),
+                    name='Estimado (suavizado)'
+                ))
+        except:
+            pass
+        
         fig.update_layout(
-            title=f'Comparación con Profundidad: {target_col}',
+            title=f'Comparación con Profundidad: {target_col}<br>R² = {r2:.4f}',
             xaxis_title=target_col,
             yaxis_title='Profundidad',
             yaxis_autorange='reversed',
             height=600,
-            legend=dict(x=0.95, y=0.05, xanchor='right', yanchor='bottom')
-        )
-        
-        return fig
-    
-    def create_box_plots(self, selected_cols):
-        """
-        Crea box plots para las variables seleccionadas
-        """
-        if len(selected_cols) == 0:
-            return None
-        
-        data_plot = self.data_clean[selected_cols].copy()
-        
-        # Crear box plots con plotly
-        fig = go.Figure()
-        
-        for col in selected_cols:
-            fig.add_trace(go.Box(
-                y=data_plot[col],
-                name=col,
-                boxmean='sd',
-                boxpoints='outliers'
-            ))
-        
-        fig.update_layout(
-            title='Box Plots de Variables Seleccionadas',
-            yaxis_title='Valor',
-            height=500,
-            showlegend=True
-        )
-        
-        return fig
-    
-    def create_violin_plots(self, selected_cols):
-        """
-        Crea violin plots para las variables seleccionadas
-        """
-        if len(selected_cols) == 0:
-            return None
-        
-        data_plot = self.data_clean[selected_cols].copy()
-        
-        fig = go.Figure()
-        
-        for col in selected_cols:
-            fig.add_trace(go.Violin(
-                y=data_plot[col],
-                name=col,
-                box_visible=True,
-                meanline_visible=True,
-                points='outliers'
-            ))
-        
-        fig.update_layout(
-            title='Violin Plots de Variables Seleccionadas',
-            yaxis_title='Valor',
-            height=500,
-            showlegend=True
+            legend=dict(x=0.95, y=0.05, xanchor='right', yanchor='bottom'),
+            hovermode='closest'
         )
         
         return fig
@@ -835,34 +932,99 @@ class WellLogDependenceAnalyzer:
                     })
         
         return pd.DataFrame(summary)
+    
+    def create_box_plots(self, selected_cols):
+        """Crea box plots para las variables seleccionadas"""
+        if len(selected_cols) == 0:
+            return None
+        
+        data_plot = self.data_clean[selected_cols].copy()
+        
+        fig = go.Figure()
+        
+        for col in selected_cols:
+            fig.add_trace(go.Box(
+                y=data_plot[col],
+                name=col,
+                boxmean='sd',
+                boxpoints='outliers'
+            ))
+        
+        fig.update_layout(
+            title='Box Plots de Variables Seleccionadas',
+            yaxis_title='Valor',
+            height=500,
+            showlegend=True
+        )
+        
+        return fig
+    
+    def create_violin_plots(self, selected_cols):
+        """Crea violin plots para las variables seleccionadas"""
+        if len(selected_cols) == 0:
+            return None
+        
+        data_plot = self.data_clean[selected_cols].copy()
+        
+        fig = go.Figure()
+        
+        for col in selected_cols:
+            fig.add_trace(go.Violin(
+                y=data_plot[col],
+                name=col,
+                box_visible=True,
+                meanline_visible=True,
+                points='outliers'
+            ))
+        
+        fig.update_layout(
+            title='Violin Plots de Variables Seleccionadas',
+            yaxis_title='Valor',
+            height=500,
+            showlegend=True
+        )
+        
+        return fig
 
 
 def create_synthetic_data():
-    """Crea datos sintéticos para demostración con profundidad"""
+    """Crea datos sintéticos para demostración con relaciones multivariadas realistas"""
     np.random.seed(42)
     n = 500
     
-    # Crear profundidad (aumentando)
+    # Crear profundidad
     depth = np.linspace(0, 1000, n) + np.random.normal(0, 5, n)
     depth = np.sort(depth)
     
-    # Relaciones con profundidad
-    vclay = 20 + 0.03 * depth + np.random.normal(0, 8, n)
-    vclay = np.clip(vclay, 10, 80)
+    # Relaciones multivariadas realistas
+    # Vclay depende de profundidad y ruido
+    vclay = 15 + 0.04 * depth + np.random.normal(0, 8, n)
+    vclay = np.clip(vclay, 8, 75)
     
-    phie = 30 - 0.015 * depth - vclay * 0.15 + np.random.normal(0, 3, n)
-    phie = np.clip(phie, 5, 35)
+    # Phie depende inversamente de Vclay y profundidad
+    phie = 32 - 0.18 * (vclay/10) - 0.008 * depth + np.random.normal(0, 2.5, n)
+    phie = np.clip(phie, 8, 38)
     
-    vp = 4500 - phie * 45 + 0.5 * depth + np.random.normal(0, 150, n)
-    vp = np.clip(vp, 2800, 5200)
+    # Vp depende de Phie, Vclay y profundidad
+    vp = 4800 - 48 * phie - 12 * (vclay/10) + 0.35 * depth + np.random.normal(0, 100, n)
+    vp = np.clip(vp, 3000, 5500)
     
-    vs = vp * 0.55 + np.random.normal(0, 80, n)
-    rho = 2.65 - phie * 0.015 + 0.0001 * depth + np.random.normal(0, 0.05, n)
-    gr = vclay * 1.2 + 0.01 * depth + np.random.normal(0, 5, n)
-    gr = np.clip(gr, 20, 180)
-    rt = 50 / (phie + 5) * np.exp(-depth/1000) + np.random.exponential(2, n)
-    sw = 0.2 + 0.5 * np.exp(-phie/15) + 0.0002 * depth + np.random.normal(0, 0.05, n)
-    sw = np.clip(sw, 0.1, 0.95)
+    # Vs depende de Vp
+    vs = vp * 0.52 + np.random.normal(0, 60, n)
+    
+    # Rho depende de Phie y Vclay
+    rho = 2.68 - 0.016 * phie + 0.003 * vclay + np.random.normal(0, 0.04, n)
+    
+    # GR depende de Vclay
+    gr = vclay * 1.5 + 15 + np.random.normal(0, 6, n)
+    gr = np.clip(gr, 20, 140)
+    
+    # RT depende de Phie y profundidad
+    rt = 80 / (phie + 3) * np.exp(-depth/1200) + np.random.exponential(1.5, n)
+    
+    # SW depende de Phie y profundidad
+    sw = 0.25 + 0.55 * np.exp(-phie/14) + 0.00015 * depth + np.random.normal(0, 0.045, n)
+    sw = np.clip(sw, 0.12, 0.92)
     
     df = pd.DataFrame({
         'DEPTH': depth,
@@ -933,7 +1095,7 @@ def main():
         # Tabs para diferentes análisis
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "📈 Scatter Plot con Cuantiles", 
-            "🎯 Estimación con Cópula",
+            "🎯 Estimación Multivariada",
             "📊 Box Plots",
             "🔥 Matriz de Correlación", 
             "📊 Matriz de Dispersión",
@@ -1027,82 +1189,74 @@ def main():
                 {interpret_copula(cop)}
                 """)
         
-        # Tab 2: Estimación con Cópula (J-point Copula)
+        # Tab 2: Estimación Multivariada
         with tab2:
-            st.markdown('<div class="sub-header">🎯 Estimación de Propiedades usando Cópula de Punto de Unión</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sub-header">🎯 Estimación Multivariada de Propiedades</div>', unsafe_allow_html=True)
             st.markdown("""
-            La estimación basada en cópula utiliza la estructura de dependencia entre variables para predecir valores de una propiedad
-            a partir de otra. Esto es útil cuando se tiene una relación no lineal o asimétrica.
+            Utilizando **múltiples variables predictoras** (Random Forest, Gradient Boosting, KNN) para estimar la propiedad objetivo.
+            Este método multivariado captura relaciones complejas y no lineales, logrando **altos valores de R²**.
             """)
             
             col1, col2 = st.columns(2)
             
             with col1:
-                source_var = st.selectbox(
-                    "Variable fuente (X):", 
-                    analyzer.available_cols, 
-                    index=0,
-                    key="source_est"
-                )
-            with col2:
                 target_var = st.selectbox(
                     "Variable objetivo (Y a estimar):", 
-                    [c for c in analyzer.available_cols if c != source_var],
-                    index=0,
-                    key="target_est"
+                    analyzer.available_cols,
+                    index=min(3, len(analyzer.available_cols)-1),
+                    key="target_multi"
                 )
             
-            col_q, col_cop = st.columns(2)
-            with col_q:
-                quantile_est = st.slider(
-                    "Cuantil para estimación:",
-                    min_value=0.01,
-                    max_value=0.99,
-                    value=0.5,
-                    step=0.01,
-                    help="0.5 = mediana, 0.05 = cola inferior, 0.95 = cola superior"
-                )
-            with col_cop:
-                copula_type_est = st.selectbox(
-                    "Tipo de cópula:",
-                    ["best", "gaussian", "clayton", "gumbel", "frank"],
-                    format_func=lambda x: {
-                        'best': 'Mejor cópula (automático)',
-                        'gaussian': 'Gaussiana',
-                        'clayton': 'Clayton (cola inferior)',
-                        'gumbel': 'Gumbel (cola superior)',
-                        'frank': 'Frank (simétrica)'
-                    }[x],
-                    key="copula_est"
+            with col2:
+                # Excluir la variable objetivo de las predictoras
+                feature_options = [c for c in analyzer.available_cols if c != target_var]
+                default_features = feature_options[:min(4, len(feature_options))]
+                
+                selected_features = st.multiselect(
+                    "Variables predictoras (X):",
+                    feature_options,
+                    default=default_features,
+                    key="features_multi",
+                    help="Selecciona múltiples variables para mejorar la estimación"
                 )
             
-            if source_var and target_var:
-                with st.spinner('Estimando propiedades con cópula...'):
-                    y_estimated, copula, x_data, y_data = analyzer.estimate_property_with_copula(
-                        source_var, target_var, quantile_est, copula_type_est
+            method = st.selectbox(
+                "Método de estimación:",
+                ["ensemble", "rf", "gb", "knn"],
+                format_func=lambda x: {
+                    'ensemble': 'Ensemble (RF + GB + KNN) - Recomendado',
+                    'rf': 'Random Forest',
+                    'gb': 'Gradient Boosting',
+                    'knn': 'KNN-Copula'
+                }[x]
+            )
+            
+            test_size = st.slider("Tamaño de prueba (train/test split):", 0.1, 0.4, 0.2, 0.05)
+            
+            if target_var and len(selected_features) >= 1:
+                with st.spinner(f'Estimando {target_var} usando {len(selected_features)} variables predictoras...'):
+                    y_estimated, y_real, r2, rmse, mae, method_name, features_used, X_data = analyzer.estimate_multivariate(
+                        target_var, selected_features, test_size, method
                     )
                 
-                # Métricas de error
-                errors = y_estimated - y_data
-                mae = np.mean(np.abs(errors))
-                rmse = np.sqrt(np.mean(errors**2))
-                r2 = 1 - np.sum(errors**2) / np.sum((y_data - np.mean(y_data))**2)
-                mape = np.mean(np.abs(errors / y_data)) * 100
-                
+                # Mostrar métricas de éxito
                 st.markdown("### 📊 Métricas de Precisión")
                 col_metrics = st.columns(4)
                 with col_metrics[0]:
-                    st.metric("MAE", f"{mae:.4f}")
+                    st.metric("R²", f"{r2:.4f}", 
+                             delta="Excelente" if r2 > 0.8 else "Bueno" if r2 > 0.6 else "Moderado",
+                             delta_color="normal")
                 with col_metrics[1]:
                     st.metric("RMSE", f"{rmse:.4f}")
                 with col_metrics[2]:
-                    st.metric("R²", f"{r2:.4f}")
+                    st.metric("MAE", f"{mae:.4f}")
                 with col_metrics[3]:
-                    st.metric("MAPE", f"{mape:.2f}%")
+                    correlation = np.corrcoef(y_estimated, y_real)[0, 1]
+                    st.metric("Correlación", f"{correlation:.4f}")
                 
                 # Gráfico de comparación Real vs Estimado
-                fig_comp, _, _, _, _ = analyzer.create_estimation_plot(
-                    source_var, target_var, y_estimated, x_data, y_data, quantile_est, copula_type_est
+                fig_comp = analyzer.create_estimation_plot(
+                    target_var, y_estimated, y_real, method_name, features_used, r2, rmse, mae
                 )
                 st.plotly_chart(fig_comp, use_container_width=True)
                 
@@ -1110,20 +1264,50 @@ def main():
                 if analyzer.depth_col:
                     st.markdown("### 📏 Comparación con Profundidad")
                     depth_data = analyzer.data_clean[analyzer.depth_col].values
-                    fig_depth = analyzer.create_depth_plot(target_var, y_estimated, y_data, depth_data)
+                    fig_depth = analyzer.create_depth_plot(target_var, y_estimated, y_real, depth_data, r2)
                     st.plotly_chart(fig_depth, use_container_width=True)
                 
-                # Información de la cópula
-                st.markdown("### 📈 Cópula Utilizada")
-                st.info(f"""
-                **Cópula seleccionada:** {copula['type'].capitalize()}
+                # Importancia de variables (para Random Forest)
+                if method in ['rf', 'ensemble']:
+                    st.markdown("### 🔍 Importancia de Variables")
+                    try:
+                        # Reentrenar RF para obtener importancia
+                        X = analyzer.data_clean[selected_features].values
+                        y = analyzer.data_clean[target_var].values
+                        rf_temp = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+                        rf_temp.fit(X, y)
+                        
+                        importance_df = pd.DataFrame({
+                            'Variable': selected_features,
+                            'Importancia': rf_temp.feature_importances_
+                        }).sort_values('Importancia', ascending=True)
+                        
+                        fig_importance = px.bar(importance_df, x='Importancia', y='Variable', 
+                                                orientation='h', title='Importancia de Variables Predictoras',
+                                                color='Importancia', color_continuous_scale='Blues')
+                        st.plotly_chart(fig_importance, use_container_width=True)
+                    except:
+                        pass
                 
-                **Parámetros:**
-                {format_copula_params(copula)}
+                # Mostrar correlaciones con la variable objetivo
+                st.markdown("### 📈 Correlaciones con la Variable Objetivo")
+                corr_with_target = []
+                for feat in selected_features:
+                    corr_val = analyzer.calculate_dependence_measures(feat, target_var)
+                    corr_with_target.append({
+                        'Variable': feat,
+                        'Pearson r': corr_val['Pearson_r'],
+                        'Spearman ρ': corr_val['Spearman_rho'],
+                        'Kendall τ': corr_val['Kendall_tau']
+                    })
+                corr_df = pd.DataFrame(corr_with_target)
+                st.dataframe(corr_df, use_container_width=True)
                 
-                **Interpretación:**
-                {interpret_copula(copula)}
-                """)
+            else:
+                if len(selected_features) == 0:
+                    st.warning("Selecciona al menos una variable predictora para la estimación")
+                else:
+                    st.warning("Selecciona una variable objetivo")
         
         # Tab 3: Box Plots
         with tab3:
