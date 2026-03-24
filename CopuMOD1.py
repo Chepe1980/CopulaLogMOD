@@ -1,7 +1,7 @@
 """
 Streamlit App para Análisis de Dependencia en Datos de Pozo
 ===========================================================
-Con regresión cuantil basada en cópulas
+Con regresión cuantil basada en cópulas - VERSIÓN CORREGIDA
 """
 
 import streamlit as st
@@ -61,6 +61,48 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ============================================================================
+# FUNCIONES AUXILIARES
+# ============================================================================
+
+def format_copula_params(cop):
+    """Formatea los parámetros de la cópula para mostrar"""
+    if cop['type'] == 'gaussian':
+        return f"- ρ (correlación) = {cop['rho']:.4f}"
+    elif cop['type'] == 'clayton':
+        return f"- θ (theta) = {cop['theta']:.4f}\n- Dependencia en cola inferior: Sí"
+    elif cop['type'] == 'gumbel':
+        return f"- θ (theta) = {cop['theta']:.4f}\n- Dependencia en cola superior: Sí"
+    elif cop['type'] == 'frank':
+        return f"- θ (theta) = {cop['theta']:.4f}\n- Dependencia simétrica"
+    return "-"
+
+
+def interpret_copula(cop):
+    """Interpreta el significado de la cópula seleccionada"""
+    if cop['type'] == 'gaussian':
+        return "La cópula Gaussiana sugiere una dependencia simétrica, similar a la correlación lineal tradicional. Es adecuada cuando la relación es aproximadamente lineal y no hay asimetría en las colas."
+    elif cop['type'] == 'clayton':
+        theta = cop['theta']
+        if theta > 1:
+            return f"La cópula Clayton (θ={theta:.2f}) indica fuerte dependencia en la cola inferior. Esto significa que valores bajos de X tienden a asociarse con valores bajos de Y (útil para modelar eventos extremos negativos)."
+        else:
+            return f"La cópula Clayton (θ={theta:.2f}) muestra dependencia moderada en la cola inferior."
+    elif cop['type'] == 'gumbel':
+        theta = cop['theta']
+        if theta > 1.5:
+            return f"La cópula Gumbel (θ={theta:.2f}) indica fuerte dependencia en la cola superior. Valores altos de X tienden a asociarse con valores altos de Y (útil para modelar máximos conjuntos)."
+        else:
+            return f"La cópula Gumbel (θ={theta:.2f}) muestra dependencia moderada en la cola superior."
+    elif cop['type'] == 'frank':
+        theta = abs(cop['theta'])
+        if theta > 5:
+            return f"La cópula Frank (θ={cop['theta']:.2f}) muestra dependencia fuerte y simétrica. La relación es similar en todas las partes de la distribución."
+        else:
+            return f"La cópula Frank (θ={cop['theta']:.2f}) muestra dependencia moderada y simétrica."
+    return ""
+
+
 class CopulaQuantileRegression:
     """
     Clase para implementar regresión cuantil basada en cópulas
@@ -80,18 +122,13 @@ class CopulaQuantileRegression:
     
     def fit_gaussian_copula(self, u, v):
         """Ajusta una cópula Gaussiana"""
-        # Transformar a normales
         z1 = norm.ppf(u)
         z2 = norm.ppf(v)
-        
-        # Calcular correlación
         rho = np.corrcoef(z1, z2)[0, 1]
-        
         return {'type': 'gaussian', 'rho': rho}
     
     def fit_clayton_copula(self, u, v):
         """Ajusta una cópula Clayton"""
-        # Estimación de theta para Clayton
         tau = stats.kendalltau(u, v)[0]
         if tau > 0:
             theta = 2 * tau / (1 - tau)
@@ -111,7 +148,6 @@ class CopulaQuantileRegression:
     def fit_frank_copula(self, u, v):
         """Ajusta una cópula Frank"""
         tau = stats.kendalltau(u, v)[0]
-        # Aproximación para Frank
         if tau > 0:
             theta = 5.0 * tau
         elif tau < 0:
@@ -129,14 +165,12 @@ class CopulaQuantileRegression:
             'frank': self.fit_frank_copula(u, v)
         }
         
-        # Calcular log-likelihood para cada cópula
         best_copula = None
         best_aic = np.inf
         
         for name, params in copulas.items():
             try:
                 if name == 'gaussian':
-                    # Calcular log-likelihood para Gaussiana
                     rho = params['rho']
                     if abs(rho) < 0.999:
                         log_lik = self._gaussian_log_likelihood(u, v, rho)
@@ -189,12 +223,6 @@ class CopulaQuantileRegression:
             return u * v
         return (u**(-theta) + v**(-theta) - 1)**(-1/theta)
     
-    def _clayton_conditional_cdf(self, v, u, theta):
-        """CDF condicional para Clayton: P(V <= v | U = u)"""
-        if theta == 0:
-            return v
-        return u**(-theta-1) * (u**(-theta) + v**(-theta) - 1)**(-1/theta - 1)
-    
     def _clayton_log_likelihood(self, u, v, theta):
         """Log-likelihood para cópula Clayton"""
         if theta <= 0:
@@ -242,27 +270,10 @@ class CopulaQuantileRegression:
                            copula_type='best', n_points=100):
         """
         Realiza regresión cuantil basada en cópulas
-        
-        Parameters:
-        -----------
-        x, y : array-like
-            Datos originales
-        quantiles : list
-            Cuantiles a estimar (0-1)
-        copula_type : str
-            Tipo de cópula ('best', 'gaussian', 'clayton', 'gumbel', 'frank')
-        n_points : int
-            Número de puntos para la curva suavizada
-        
-        Returns:
-        --------
-        dict : Diccionario con los resultados de la regresión cuantil
         """
-        # Transformar a rangos uniformes
         u = self.empirical_cdf(x)
         v = self.empirical_cdf(y)
         
-        # Seleccionar la mejor cópula
         if copula_type == 'best':
             copula = self.select_best_copula(u, v)
         else:
@@ -277,19 +288,15 @@ class CopulaQuantileRegression:
             else:
                 copula = self.fit_gaussian_copula(u, v)
         
-        # Crear grid de valores de x
         x_grid = np.linspace(np.percentile(x, 1), np.percentile(x, 99), n_points)
         u_grid = self.empirical_cdf(x_grid)
         
-        # Calcular los cuantiles condicionales
         quantile_results = {}
         
         for q in quantiles:
             y_q = []
             for u_val in u_grid:
-                # Encontrar v tal que C(u, v) = q
                 v_q = self._find_conditional_quantile(u_val, q, copula)
-                # Transformar de vuelta a la escala original
                 y_val = self.empirical_inverse_cdf(v_q, y)
                 y_q.append(y_val)
             
@@ -301,41 +308,26 @@ class CopulaQuantileRegression:
         return quantile_results
     
     def _find_conditional_quantile(self, u, q, copula):
-        """
-        Encuentra v tal que P(V <= v | U = u) = q
-        """
+        """Encuentra v tal que P(V <= v | U = u) = q"""
         if copula['type'] == 'gaussian':
-            # Para cópula Gaussiana
             rho = copula['rho']
             z_u = norm.ppf(u)
             z_v = norm.ppf(q)
-            # La distribución condicional es normal
             z_v_given_u = rho * z_u + np.sqrt(1 - rho**2) * z_v
             return norm.cdf(z_v_given_u)
         
         elif copula['type'] == 'clayton':
-            # Para cópula Clayton
             theta = copula['theta']
             if theta == 0:
                 return q
-            # La función condicional tiene solución analítica
             v = ( (q**(-theta/(theta+1)) - 1) * u**(-theta) + 1 )**(-1/theta)
             return np.clip(v, 0, 1)
         
         elif copula['type'] == 'gumbel':
-            # Para cópula Gumbel - solución numérica
             theta = copula['theta']
             if theta == 1:
                 return q
             
-            def objective(v):
-                log_u = -np.log(u)
-                log_v = -np.log(v)
-                s = log_u**theta + log_v**theta
-                cdf_val = np.exp(-s**(1/theta))
-                return (cdf_val - q)**2
-            
-            # Búsqueda de raíz
             from scipy.optimize import brentq
             try:
                 v = brentq(lambda v: self._gumbel_copula_cdf(u, v, theta) - q, 0.001, 0.999)
@@ -344,14 +336,9 @@ class CopulaQuantileRegression:
                 return q
         
         elif copula['type'] == 'frank':
-            # Para cópula Frank - solución numérica
             theta = copula['theta']
             if theta == 0:
                 return q
-            
-            def objective(v):
-                cdf_val = self._frank_copula_cdf(u, v, theta)
-                return (cdf_val - q)**2
             
             from scipy.optimize import brentq
             try:
@@ -389,7 +376,6 @@ class WellLogDependenceAnalyzer:
         x = self.data_clean[col1].values
         y = self.data_clean[col2].values
         
-        # Correlaciones
         pearson_corr, pearson_p = pearsonr(x, y)
         spearman_corr, spearman_p = spearmanr(x, y)
         kendall_corr, kendall_p = kendalltau(x, y)
@@ -406,21 +392,15 @@ class WellLogDependenceAnalyzer:
     
     def create_scatter_plot_with_quantiles(self, col1, col2, quantiles=[0.05, 0.25, 0.5, 0.75, 0.95],
                                           copula_type='best', add_regression=True, add_density=True):
-        """
-        Crea scatter plot con regresión cuantil basada en cópulas
-        """
+        """Crea scatter plot con regresión cuantil basada en cópulas"""
         x = self.data_clean[col1].values
         y = self.data_clean[col2].values
         dep = self.calculate_dependence_measures(col1, col2)
         
-        # Calcular regresión cuantil
-        with st.spinner('Calculando regresión cuantil basada en cópulas...'):
-            quantile_results = self.cqr.quantile_regression(x, y, quantiles, copula_type)
+        quantile_results = self.cqr.quantile_regression(x, y, quantiles, copula_type)
         
-        # Crear figura con matplotlib
         fig, ax = plt.subplots(figsize=(12, 8))
         
-        # Scatter plot principal con densidad
         if add_density:
             xy = np.vstack([x, y])
             z = gaussian_kde(xy)(xy)
@@ -432,7 +412,6 @@ class WellLogDependenceAnalyzer:
             ax.scatter(x, y, alpha=0.6, s=30, c='steelblue', 
                       edgecolors='white', linewidth=0.5)
         
-        # Regresión lineal (opcional)
         if add_regression:
             z = np.polyfit(x, y, 1)
             p = np.poly1d(z)
@@ -441,7 +420,6 @@ class WellLogDependenceAnalyzer:
             ax.plot(x_line, y_line, 'r--', linewidth=2, 
                    label=f'Lineal (R²={dep["Pearson_R2"]:.3f})')
         
-        # Curvas de regresión cuantil
         colors = ['#800000', '#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#ffff33']
         quantile_labels = {
             0.05: '5% (Cola inferior)',
@@ -465,7 +443,6 @@ class WellLogDependenceAnalyzer:
                 ax.plot(x_grid, y_q, color=color, linestyle=linestyle, 
                        linewidth=linewidth, label=label, alpha=0.8)
         
-        # Configuración del gráfico
         ax.set_xlabel(col1, fontsize=12, fontweight='bold')
         ax.set_ylabel(col2, fontsize=12, fontweight='bold')
         ax.set_title(f'{col1} vs {col2}\nRegresión Cuantil basada en Cópula {quantile_results["copula"]["type"].capitalize()}', 
@@ -473,7 +450,6 @@ class WellLogDependenceAnalyzer:
         ax.legend(loc='best', fontsize=9, ncol=2)
         ax.grid(True, alpha=0.3)
         
-        # Añadir caja con medidas de dependencia
         textstr = f'$\\mathbf{{Pearson\\ r = {dep["Pearson_r"]:.4f}}}$\n' \
                   f'$\\mathbf{{Spearman\\ \\rho = {dep["Spearman_rho"]:.4f}}}$\n' \
                   f'$\\mathbf{{Kendall\\ \\tau = {dep["Kendall_tau"]:.4f}}}$\n' \
@@ -489,20 +465,15 @@ class WellLogDependenceAnalyzer:
     
     def create_scatter_plot_plotly_with_quantiles(self, col1, col2, quantiles=[0.05, 0.25, 0.5, 0.75, 0.95],
                                                   copula_type='best', add_regression=True, add_density=True):
-        """
-        Crea scatter plot interactivo con regresión cuantil basada en cópulas usando Plotly
-        """
+        """Crea scatter plot interactivo con regresión cuantil"""
         x = self.data_clean[col1].values
         y = self.data_clean[col2].values
         dep = self.calculate_dependence_measures(col1, col2)
         
-        # Calcular regresión cuantil
-        with st.spinner('Calculando regresión cuantil basada en cópulas...'):
-            quantile_results = self.cqr.quantile_regression(x, y, quantiles, copula_type)
+        quantile_results = self.cqr.quantile_regression(x, y, quantiles, copula_type)
         
         fig = go.Figure()
         
-        # Scatter plot principal
         if add_density:
             xy = np.vstack([x, y])
             z = gaussian_kde(xy)(xy)
@@ -532,7 +503,6 @@ class WellLogDependenceAnalyzer:
                 name='Datos'
             ))
         
-        # Regresión lineal
         if add_regression:
             z = np.polyfit(x, y, 1)
             p = np.poly1d(z)
@@ -546,7 +516,6 @@ class WellLogDependenceAnalyzer:
                 name=f'Lineal (R²={dep["Pearson_R2"]:.3f})'
             ))
         
-        # Curvas de regresión cuantil
         colors = ['#800000', '#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00', '#ffff33']
         quantile_labels = {
             0.05: '5% (Cola inferior)',
@@ -578,7 +547,6 @@ class WellLogDependenceAnalyzer:
                           for xi, yi in zip(x_grid, y_q)]
                 ))
         
-        # Configuración del layout
         fig.update_layout(
             title=f'<b>{col1} vs {col2}</b><br>Regresión Cuantil basada en Cópula {quantile_results["copula"]["type"].capitalize()}',
             xaxis_title=f'<b>{col1}</b>',
@@ -591,7 +559,6 @@ class WellLogDependenceAnalyzer:
                        bgcolor='rgba(255,255,255,0.8)')
         )
         
-        # Añadir anotación con medidas de dependencia
         annotation_text = (
             f"<b>Pearson r = {dep['Pearson_r']:.4f}</b><br>"
             f"<b>Spearman ρ = {dep['Spearman_rho']:.4f}</b><br>"
@@ -624,16 +591,13 @@ class WellLogDependenceAnalyzer:
         
         fig, ax = plt.subplots(figsize=figsize)
         
-        # Crear heatmap
         im = ax.imshow(corr_matrix, cmap='RdBu_r', vmin=-1, vmax=1)
         
-        # Configurar ejes
         ax.set_xticks(np.arange(len(self.available_cols)))
         ax.set_yticks(np.arange(len(self.available_cols)))
         ax.set_xticklabels(self.available_cols, rotation=45, ha='right')
         ax.set_yticklabels(self.available_cols)
         
-        # Añadir valores
         for i in range(len(self.available_cols)):
             for j in range(len(self.available_cols)):
                 text = ax.text(j, i, f'{corr_matrix[i, j]:.2f}',
@@ -641,7 +605,6 @@ class WellLogDependenceAnalyzer:
                              color="white" if abs(corr_matrix[i, j]) > 0.5 else "black",
                              fontsize=10)
         
-        # Barra de color
         plt.colorbar(im, ax=ax, label=f'Correlación de {correlation_type.capitalize()}')
         
         title_map = {
@@ -681,12 +644,10 @@ class WellLogDependenceAnalyzer:
         if len(selected_cols) < 2:
             return None
         
-        # Muestrear datos si son muchos
         data_subset = self.data_clean[selected_cols].copy()
         if len(data_subset) > sample_size:
             data_subset = data_subset.sample(n=sample_size, random_state=42)
         
-        # Crear matriz de subplots
         n = len(selected_cols)
         fig = make_subplots(
             rows=n, cols=n,
@@ -696,18 +657,15 @@ class WellLogDependenceAnalyzer:
             horizontal_spacing=0.05
         )
         
-        # Llenar la matriz
         for i, col1 in enumerate(selected_cols):
             for j, col2 in enumerate(selected_cols):
                 if i == j:
-                    # Diagonal: histogramas
                     hist_data = data_subset[col1]
                     fig.add_trace(
                         go.Histogram(x=hist_data, name=col1, showlegend=False),
                         row=i+1, col=j+1
                     )
                 else:
-                    # Off-diagonal: scatter plots
                     x = data_subset[col1]
                     y = data_subset[col2]
                     
@@ -723,7 +681,6 @@ class WellLogDependenceAnalyzer:
                         row=i+1, col=j+1
                     )
         
-        # Actualizar layout
         fig.update_layout(
             height=800,
             width=800,
@@ -731,7 +688,6 @@ class WellLogDependenceAnalyzer:
             showlegend=False
         )
         
-        # Actualizar ejes
         for i, col in enumerate(selected_cols):
             fig.update_xaxes(title_text=col if i == n-1 else "", row=n, col=i+1)
             fig.update_yaxes(title_text=col if i == 0 else "", row=i+1, col=1)
@@ -816,7 +772,7 @@ def create_synthetic_data():
 
 
 # ============================================================================
-# INTERFAZ DE STREAMLIT
+# FUNCIÓN PRINCIPAL
 # ============================================================================
 
 def main():
@@ -828,7 +784,6 @@ def main():
     with st.sidebar:
         st.header("📂 Carga de Datos")
         
-        # Opción de carga
         data_source = st.radio(
             "Seleccionar fuente de datos:",
             ["📁 Cargar archivo CSV", "🎲 Usar datos sintéticos"]
@@ -849,15 +804,10 @@ def main():
             st.info("🎲 Usando datos sintéticos generados para demostración")
         
         if data is not None:
-            # Mostrar preview de datos
             st.subheader("📊 Vista previa de datos")
             st.dataframe(data.head(), use_container_width=True)
             
-            # Inicializar analizador
             analyzer = WellLogDependenceAnalyzer(data)
-            
-            # Selección de variables
-            st.subheader("🔧 Configuración")
             available_cols = analyzer.available_cols
             
             if len(available_cols) > 0:
@@ -870,7 +820,6 @@ def main():
     
     # Main content
     if data is not None and len(analyzer.available_cols) > 0:
-        # Tabs para diferentes análisis
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📈 Scatter Plot con Cuantiles", 
             "🔥 Matriz de Correlación", 
@@ -898,7 +847,6 @@ def main():
                 add_density = st.checkbox("Mostrar densidad", value=True)
                 use_plotly = st.checkbox("Modo interactivo", value=True)
             
-            # Selección de cuantiles
             st.markdown("### 📊 Selección de Cuantiles")
             col_q1, col_q2, col_q3, col_q4, col_q5 = st.columns(5)
             
@@ -913,7 +861,6 @@ def main():
             with col_q5:
                 show_q95 = st.checkbox("95% (Cola superior)", value=True)
             
-            # Tipo de cópula
             copula_type = st.selectbox(
                 "Tipo de cópula para regresión cuantil:",
                 ["best", "gaussian", "clayton", "gumbel", "frank"],
@@ -926,7 +873,6 @@ def main():
                 }[x]
             )
             
-            # Construir lista de cuantiles
             quantiles = []
             if show_q05:
                 quantiles.append(0.05)
@@ -943,10 +889,8 @@ def main():
                 quantiles = [0.05, 0.25, 0.5, 0.75, 0.95]
             
             if var_x and var_y:
-                # Mostrar medidas de dependencia
                 dep = analyzer.calculate_dependence_measures(var_x, var_y)
                 
-                # Métricas destacadas
                 st.markdown("### 📊 Medidas de Dependencia")
                 col_metrics = st.columns(4)
                 with col_metrics[0]:
@@ -961,32 +905,31 @@ def main():
                     st.metric("|Spearman - Pearson|", f"{diff:.4f}",
                              delta="No-linealidad" if diff > 0.2 else "Lineal")
                 
-                # Generar gráfico con regresión cuantil
                 if use_plotly:
-                    fig, quantile_results = analyzer.create_scatter_plot_plotly_with_quantiles(
-                        var_x, var_y, quantiles, copula_type, add_regression, add_density
-                    )
+                    with st.spinner('Calculando regresión cuantil...'):
+                        fig, quantile_results = analyzer.create_scatter_plot_plotly_with_quantiles(
+                            var_x, var_y, quantiles, copula_type, add_regression, add_density
+                        )
                     st.plotly_chart(fig, use_container_width=True)
                 else:
-                    fig, quantile_results = analyzer.create_scatter_plot_with_quantiles(
-                        var_x, var_y, quantiles, copula_type, add_regression, add_density
-                    )
+                    with st.spinner('Calculando regresión cuantil...'):
+                        fig, quantile_results = analyzer.create_scatter_plot_with_quantiles(
+                            var_x, var_y, quantiles, copula_type, add_regression, add_density
+                        )
                     st.pyplot(fig)
                 
-                # Mostrar información de la cópula seleccionada
                 st.markdown("### 📈 Información de la Cópula")
                 cop = quantile_results['copula']
                 st.info(f"""
                 **Cópula seleccionada:** {cop['type'].capitalize()}
                 
                 **Parámetros:**
-                {self._format_copula_params(cop)}
+                {format_copula_params(cop)}
                 
                 **Interpretación:**
-                {self._interpret_copula(cop)}
+                {interpret_copula(cop)}
                 """)
                 
-                # Interpretación de los cuantiles
                 st.markdown("### 💡 Interpretación de la Regresión Cuantil")
                 st.markdown("""
                 - **Línea sólida (50%)**: Mediana condicional - valor central esperado
@@ -995,13 +938,12 @@ def main():
                 - **Cuantiles extremos (5% y 95%)**: Muestran comportamiento en colas de la distribución
                 """)
                 
-                # Detección de heterocedasticidad
                 if len(quantiles) >= 3 and 0.05 in quantile_results and 0.95 in quantile_results:
                     y_05 = quantile_results[0.05]
                     y_95 = quantile_results[0.95]
                     spread = y_95 - y_05
                     spread_range = spread.max() - spread.min()
-                    if spread_range > np.std(y) * 0.5:
+                    if spread_range > np.std(dep['Pearson_r'] * 100) * 0.5:
                         st.warning("⚠️ Se detecta heterocedasticidad (variabilidad no constante) - los cuantiles se separan a lo largo de X")
                     else:
                         st.success("✅ Varianza relativamente constante - los cuantiles se mantienen paralelos")
@@ -1120,44 +1062,6 @@ def main():
         
         *Nota: Los nombres de las columnas pueden variar, se detectarán automáticamente.*
         """)
-
-
-def _format_copula_params(cop):
-    """Formatea los parámetros de la cópula para mostrar"""
-    if cop['type'] == 'gaussian':
-        return f"- ρ (correlación) = {cop['rho']:.4f}"
-    elif cop['type'] == 'clayton':
-        return f"- θ (theta) = {cop['theta']:.4f}\n- Dependencia en cola inferior: Sí"
-    elif cop['type'] == 'gumbel':
-        return f"- θ (theta) = {cop['theta']:.4f}\n- Dependencia en cola superior: Sí"
-    elif cop['type'] == 'frank':
-        return f"- θ (theta) = {cop['theta']:.4f}\n- Dependencia simétrica"
-    return "-"
-
-
-def _interpret_copula(cop):
-    """Interpreta el significado de la cópula seleccionada"""
-    if cop['type'] == 'gaussian':
-        return "La cópula Gaussiana sugiere una dependencia simétrica, similar a la correlación lineal tradicional. Es adecuada cuando la relación es aproximadamente lineal y no hay asimetría en las colas."
-    elif cop['type'] == 'clayton':
-        theta = cop['theta']
-        if theta > 1:
-            return f"La cópula Clayton (θ={theta:.2f}) indica fuerte dependencia en la cola inferior. Esto significa que valores bajos de X tienden a asociarse con valores bajos de Y (útil para modelar eventos extremos negativos)."
-        else:
-            return f"La cópula Clayton (θ={theta:.2f}) muestra dependencia moderada en la cola inferior."
-    elif cop['type'] == 'gumbel':
-        theta = cop['theta']
-        if theta > 1.5:
-            return f"La cópula Gumbel (θ={theta:.2f}) indica fuerte dependencia en la cola superior. Valores altos de X tienden a asociarse con valores altos de Y (útil para modelar máximos conjuntos)."
-        else:
-            return f"La cópula Gumbel (θ={theta:.2f}) muestra dependencia moderada en la cola superior."
-    elif cop['type'] == 'frank':
-        theta = abs(cop['theta'])
-        if theta > 5:
-            return f"La cópula Frank (θ={cop['theta']:.2f}) muestra dependencia fuerte y simétrica. La relación es similar en todas las partes de la distribución."
-        else:
-            return f"La cópula Frank (θ={cop['theta']:.2f}) muestra dependencia moderada y simétrica."
-    return ""
 
 
 if __name__ == "__main__":
