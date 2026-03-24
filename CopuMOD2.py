@@ -2,9 +2,37 @@
 Streamlit App para Análisis de Dependencia en Datos de Pozo
 ===========================================================
 Con regresión cuantil basada en cópulas y estimación multivariada
-VERSIÓN MEJORADA CON ESTIMACIÓN MULTIVARIADA
+VERSIÓN CON INSTALACIÓN AUTOMÁTICA DE DEPENDENCIAS
 """
 
+import subprocess
+import sys
+import importlib.metadata
+
+# Verificar e instalar dependencias faltantes
+required_packages = {
+    'streamlit': 'streamlit',
+    'numpy': 'numpy',
+    'pandas': 'pandas',
+    'matplotlib': 'matplotlib',
+    'seaborn': 'seaborn',
+    'scipy': 'scipy',
+    'plotly': 'plotly',
+    'scikit-learn': 'scikit-learn'
+}
+
+installed_packages = {pkg: True for pkg in required_packages.keys()}
+
+# Intentar importar cada paquete
+for pkg, import_name in required_packages.items():
+    try:
+        __import__(import_name)
+    except ImportError:
+        print(f"Instalando {import_name}...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", import_name])
+        print(f"{import_name} instalado correctamente")
+
+# Ahora importar todas las librerías
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -12,10 +40,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 from scipy.stats import norm, kendalltau, spearmanr, pearsonr, gaussian_kde
-from scipy.interpolate import UnivariateSpline, interp1d, interp2d, RegularGridInterpolator
-from scipy.optimize import minimize, brentq
+from scipy.interpolate import UnivariateSpline
+from scipy.optimize import brentq
 from scipy.spatial import cKDTree
-from scipy.spatial.distance import cdist
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -61,6 +88,9 @@ st.markdown("""
         padding: 1rem;
         margin: 1rem 0;
         border-radius: 0.5rem;
+    }
+    .stButton button {
+        width: 100%;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -147,7 +177,7 @@ class MultivariateCopulaEstimator:
     
     def estimate_with_knn_copula(self, X_train, y_train, X_test, n_neighbors=5):
         """
-        Estimación usando KNN con pesos basados en cópula
+        Estimación usando KNN con pesos basados en distancia
         """
         # Normalizar datos
         scaler = StandardScaler()
@@ -180,19 +210,31 @@ class MultivariateCopulaEstimator:
         models = []
         
         if 'rf' in methods:
-            y_pred_rf, model_rf = self.estimate_with_random_forest(X_train, y_train, X_test)
-            predictions.append(y_pred_rf)
-            models.append(('Random Forest', model_rf))
+            try:
+                y_pred_rf, model_rf = self.estimate_with_random_forest(X_train, y_train, X_test)
+                predictions.append(y_pred_rf)
+                models.append(('Random Forest', model_rf))
+            except Exception as e:
+                print(f"Error en RF: {e}")
         
         if 'gb' in methods:
-            y_pred_gb, model_gb = self.estimate_with_gradient_boosting(X_train, y_train, X_test)
-            predictions.append(y_pred_gb)
-            models.append(('Gradient Boosting', model_gb))
+            try:
+                y_pred_gb, model_gb = self.estimate_with_gradient_boosting(X_train, y_train, X_test)
+                predictions.append(y_pred_gb)
+                models.append(('Gradient Boosting', model_gb))
+            except Exception as e:
+                print(f"Error en GB: {e}")
         
         if 'knn' in methods:
-            y_pred_knn, scaler = self.estimate_with_knn_copula(X_train, y_train, X_test)
-            predictions.append(y_pred_knn)
-            models.append(('KNN-Copula', scaler))
+            try:
+                y_pred_knn, scaler = self.estimate_with_knn_copula(X_train, y_train, X_test)
+                predictions.append(y_pred_knn)
+                models.append(('KNN-Copula', scaler))
+            except Exception as e:
+                print(f"Error en KNN: {e}")
+        
+        if len(predictions) == 0:
+            return np.zeros(len(X_test)), []
         
         # Promedio simple
         y_pred_ensemble = np.mean(predictions, axis=0)
@@ -480,17 +522,6 @@ class WellLogDependenceAnalyzer:
     def estimate_multivariate(self, target_col, feature_cols, test_size=0.2, method='ensemble'):
         """
         Estimación multivariada usando múltiples variables predictoras
-        
-        Parameters:
-        -----------
-        target_col : str
-            Variable objetivo a estimar
-        feature_cols : list
-            Lista de variables predictoras
-        test_size : float
-            Proporción de datos para prueba
-        method : str
-            Método de estimación: 'rf', 'gb', 'knn', 'ensemble'
         """
         # Preparar datos
         X = self.data_clean[feature_cols].values
@@ -542,23 +573,18 @@ class WellLogDependenceAnalyzer:
             elif method == 'gb':
                 model_full = GradientBoostingRegressor(n_estimators=100, max_depth=5, random_state=42)
             elif method == 'knn':
-                scaler = StandardScaler()
-                X_scaled = scaler.fit_transform(X_all)
                 y_all_pred, _ = self.multivariate_estimator.estimate_with_knn_copula(
                     X_all, y, X_all
                 )
                 return y_all_pred, y, r2, rmse, mae, method_name, feature_cols, X_all
-        
-        if method != 'knn' and method != 'ensemble':
+            
             model_full.fit(X_all, y)
             y_all_pred = model_full.predict(X_all)
         
         return y_all_pred, y, r2, rmse, mae, method_name, feature_cols, X_all
     
     def create_estimation_plot(self, target_col, y_estimated, y_real, method_name, feature_cols, r2, rmse, mae):
-        """
-        Crea gráfico de comparación entre valores reales y estimados
-        """
+        """Crea gráfico de comparación entre valores reales y estimados"""
         fig = make_subplots(
             rows=1, cols=3,
             subplot_titles=('Comparación: Real vs Estimado', 'Error de Predicción', 'Distribución de Errores'),
@@ -637,9 +663,7 @@ class WellLogDependenceAnalyzer:
         return fig
     
     def create_depth_plot(self, target_col, y_estimated, y_real, depth, r2):
-        """
-        Crea gráfico de profundidad vs valores reales y estimados
-        """
+        """Crea gráfico de profundidad vs valores reales y estimados"""
         fig = go.Figure()
         
         # Ordenar por profundidad
@@ -666,9 +690,9 @@ class WellLogDependenceAnalyzer:
             hoverinfo='text'
         ))
         
-        # Líneas de tendencia
-        from scipy.signal import savgol_filter
+        # Líneas de tendencia suavizadas
         try:
+            from scipy.signal import savgol_filter
             window = min(51, len(depth_sorted) // 10 * 2 + 1)
             if window % 2 == 0:
                 window += 1
@@ -997,32 +1021,24 @@ def create_synthetic_data():
     depth = np.sort(depth)
     
     # Relaciones multivariadas realistas
-    # Vclay depende de profundidad y ruido
     vclay = 15 + 0.04 * depth + np.random.normal(0, 8, n)
     vclay = np.clip(vclay, 8, 75)
     
-    # Phie depende inversamente de Vclay y profundidad
     phie = 32 - 0.18 * (vclay/10) - 0.008 * depth + np.random.normal(0, 2.5, n)
     phie = np.clip(phie, 8, 38)
     
-    # Vp depende de Phie, Vclay y profundidad
     vp = 4800 - 48 * phie - 12 * (vclay/10) + 0.35 * depth + np.random.normal(0, 100, n)
     vp = np.clip(vp, 3000, 5500)
     
-    # Vs depende de Vp
     vs = vp * 0.52 + np.random.normal(0, 60, n)
     
-    # Rho depende de Phie y Vclay
     rho = 2.68 - 0.016 * phie + 0.003 * vclay + np.random.normal(0, 0.04, n)
     
-    # GR depende de Vclay
     gr = vclay * 1.5 + 15 + np.random.normal(0, 6, n)
     gr = np.clip(gr, 20, 140)
     
-    # RT depende de Phie y profundidad
     rt = 80 / (phie + 3) * np.exp(-depth/1200) + np.random.exponential(1.5, n)
     
-    # SW depende de Phie y profundidad
     sw = 0.25 + 0.55 * np.exp(-phie/14) + 0.00015 * depth + np.random.normal(0, 0.045, n)
     sw = np.clip(sw, 0.12, 0.92)
     
@@ -1286,8 +1302,8 @@ def main():
                                                 orientation='h', title='Importancia de Variables Predictoras',
                                                 color='Importancia', color_continuous_scale='Blues')
                         st.plotly_chart(fig_importance, use_container_width=True)
-                    except:
-                        pass
+                    except Exception as e:
+                        st.info("No se pudo calcular la importancia de variables")
                 
                 # Mostrar correlaciones con la variable objetivo
                 st.markdown("### 📈 Correlaciones con la Variable Objetivo")
@@ -1296,9 +1312,9 @@ def main():
                     corr_val = analyzer.calculate_dependence_measures(feat, target_var)
                     corr_with_target.append({
                         'Variable': feat,
-                        'Pearson r': corr_val['Pearson_r'],
-                        'Spearman ρ': corr_val['Spearman_rho'],
-                        'Kendall τ': corr_val['Kendall_tau']
+                        'Pearson r': f"{corr_val['Pearson_r']:.4f}",
+                        'Spearman ρ': f"{corr_val['Spearman_rho']:.4f}",
+                        'Kendall τ': f"{corr_val['Kendall_tau']:.4f}"
                     })
                 corr_df = pd.DataFrame(corr_with_target)
                 st.dataframe(corr_df, use_container_width=True)
