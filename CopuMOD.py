@@ -1,8 +1,7 @@
 """
 Streamlit App para Análisis de Dependencia en Datos de Pozo
 ===========================================================
-Aplicación interactiva para explorar relaciones entre registros de pozo
-con heatmaps, scatter plots y matriz de dispersión.
+Con títulos claros para Pearson, Kendall y Spearman en scatter plot
 """
 
 import streamlit as st
@@ -14,10 +13,8 @@ from scipy import stats
 from scipy.stats import norm, kendalltau, spearmanr, pearsonr
 from scipy.interpolate import UnivariateSpline
 from scipy.stats import gaussian_kde
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import io
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -49,6 +46,14 @@ st.markdown("""
         padding: 1rem;
         border-radius: 0.5rem;
         text-align: center;
+    }
+    .dependence-box {
+        background-color: #f8f9fa;
+        border-left: 4px solid #1f77b4;
+        padding: 0.5rem;
+        margin: 0.5rem 0;
+        font-family: monospace;
+        font-size: 1rem;
     }
     .stButton button {
         width: 100%;
@@ -95,30 +100,78 @@ class WellLogDependenceAnalyzer:
             'Kendall_p': kendall_p
         }
     
-    def compute_correlation_matrices(self):
-        """Calcula matrices de correlación"""
-        n = len(self.available_cols)
-        pearson_matrix = np.zeros((n, n))
-        spearman_matrix = np.zeros((n, n))
-        kendall_matrix = np.zeros((n, n))
+    def create_scatter_plot_matplotlib(self, col1, col2, add_regression=True, add_density=True, figsize=(10, 8)):
+        """
+        Crea scatter plot con matplotlib con títulos claros para Pearson, Kendall y Spearman
+        """
+        x = self.data_clean[col1].values
+        y = self.data_clean[col2].values
+        dep = self.calculate_dependence_measures(col1, col2)
         
-        for i, col1 in enumerate(self.available_cols):
-            for j, col2 in enumerate(self.available_cols):
-                dep = self.calculate_dependence_measures(col1, col2)
-                pearson_matrix[i, j] = dep['Pearson_r']
-                spearman_matrix[i, j] = dep['Spearman_rho']
-                kendall_matrix[i, j] = dep['Kendall_tau']
+        fig, ax = plt.subplots(figsize=figsize)
         
-        self.correlation_matrices = {
-            'pearson': pearson_matrix,
-            'spearman': spearman_matrix,
-            'kendall': kendall_matrix
-        }
+        # Scatter plot principal
+        if add_density:
+            # Calcular densidad para colorear
+            xy = np.vstack([x, y])
+            z = gaussian_kde(xy)(xy)
+            idx = z.argsort()
+            scatter = ax.scatter(x[idx], y[idx], c=z[idx], s=30, 
+                                cmap='viridis', alpha=0.7, edgecolors='white', linewidth=0.5)
+            plt.colorbar(scatter, ax=ax, label='Densidad')
+        else:
+            ax.scatter(x, y, alpha=0.6, s=30, c='steelblue', 
+                      edgecolors='white', linewidth=0.5)
         
-        return pearson_matrix, spearman_matrix, kendall_matrix
+        # Regresión lineal
+        if add_regression:
+            z = np.polyfit(x, y, 1)
+            p = np.poly1d(z)
+            x_line = np.linspace(x.min(), x.max(), 100)
+            y_line = p(x_line)
+            ax.plot(x_line, y_line, 'r--', linewidth=2, 
+                   label=f'Lineal (R²={dep["Pearson_R2"]:.3f})')
+        
+        # Regresión no lineal (spline)
+        try:
+            idx_sorted = np.argsort(x)
+            x_sorted = x[idx_sorted]
+            y_sorted = y[idx_sorted]
+            s = len(x_sorted) * 0.05
+            spline = UnivariateSpline(x_sorted, y_sorted, s=s)
+            x_smooth = np.linspace(x_sorted.min(), x_sorted.max(), 200)
+            y_smooth = spline(x_smooth)
+            ax.plot(x_smooth, y_smooth, 'g-', linewidth=2.5, 
+                   label='Tendencia no lineal', alpha=0.8)
+        except:
+            pass
+        
+        # Configuración del gráfico
+        ax.set_xlabel(col1, fontsize=12, fontweight='bold')
+        ax.set_ylabel(col2, fontsize=12, fontweight='bold')
+        ax.set_title(f'{col1} vs {col2}', fontsize=14, fontweight='bold')
+        ax.legend(loc='lower right', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        # Añadir caja con medidas de dependencia (como en la figura)
+        # Crear un cuadro de texto con los valores destacados
+        textstr = f'$\\mathbf{{Pearson\\ r = {dep["Pearson_r"]:.4f}}}$\n' \
+                  f'$\\mathbf{{Spearman\\ \\rho = {dep["Spearman_rho"]:.4f}}}$\n' \
+                  f'$\\mathbf{{Kendall\\ \\tau = {dep["Kendall_tau"]:.4f}}}$\n' \
+                  f'$\\mathbf{{R^2 = {dep["Pearson_R2"]:.4f}}}$'
+        
+        # Posicionar el texto en la esquina superior izquierda
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.85, edgecolor='black', linewidth=1.5)
+        ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=11,
+                verticalalignment='top', bbox=props, family='monospace')
+        
+        plt.tight_layout()
+        return fig
     
-    def create_scatter_plot(self, col1, col2, add_regression=True, add_density=True):
-        """Crea scatter plot interactivo con Plotly"""
+    def create_scatter_plot_plotly(self, col1, col2, add_regression=True, add_density=True):
+        """
+        Crea scatter plot interactivo con Plotly con títulos claros
+        """
         x = self.data_clean[col1].values
         y = self.data_clean[col2].values
         dep = self.calculate_dependence_measures(col1, col2)
@@ -139,7 +192,8 @@ class WellLogDependenceAnalyzer:
                     colorscale='Viridis',
                     showscale=True,
                     colorbar=dict(title="Densidad"),
-                    opacity=0.7
+                    opacity=0.7,
+                    line=dict(width=0.5, color='white')
                 ),
                 text=[f'{col1}: {xi:.2f}<br>{col2}: {yi:.2f}' for xi, yi in zip(x, y)],
                 hoverinfo='text',
@@ -149,7 +203,7 @@ class WellLogDependenceAnalyzer:
             fig.add_trace(go.Scatter(
                 x=x, y=y,
                 mode='markers',
-                marker=dict(size=8, color='steelblue', opacity=0.6),
+                marker=dict(size=8, color='steelblue', opacity=0.6, line=dict(width=0.5, color='white')),
                 text=[f'{col1}: {xi:.2f}<br>{col2}: {yi:.2f}' for xi, yi in zip(x, y)],
                 hoverinfo='text',
                 name='Datos'
@@ -190,21 +244,22 @@ class WellLogDependenceAnalyzer:
         
         # Configuración del layout
         fig.update_layout(
-            title=f'{col1} vs {col2}',
-            xaxis_title=col1,
-            yaxis_title=col2,
+            title=f'<b>{col1} vs {col2}</b>',
+            xaxis_title=f'<b>{col1}</b>',
+            yaxis_title=f'<b>{col2}</b>',
             hovermode='closest',
-            width=800,
+            width=900,
             height=600,
-            showlegend=True
+            showlegend=True,
+            legend=dict(x=0.95, y=0.05, xanchor='right', yanchor='bottom')
         )
         
-        # Añadir anotaciones con estadísticas
+        # Añadir anotación con medidas de dependencia (como en la figura)
         annotation_text = (
-            f"Pearson r = {dep['Pearson_r']:.4f}<br>"
-            f"Spearman ρ = {dep['Spearman_rho']:.4f}<br>"
-            f"Kendall τ = {dep['Kendall_tau']:.4f}<br>"
-            f"R² = {dep['Pearson_R2']:.4f}"
+            f"<b>Pearson r = {dep['Pearson_r']:.4f}</b><br>"
+            f"<b>Spearman ρ = {dep['Spearman_rho']:.4f}</b><br>"
+            f"<b>Kendall τ = {dep['Kendall_tau']:.4f}</b><br>"
+            f"<b>R² = {dep['Pearson_R2']:.4f}</b>"
         )
         
         fig.add_annotation(
@@ -212,10 +267,12 @@ class WellLogDependenceAnalyzer:
             xref="paper", yref="paper",
             text=annotation_text,
             showarrow=False,
-            font=dict(size=12),
-            bgcolor="rgba(255,255,255,0.8)",
+            font=dict(size=12, family="monospace"),
+            align="left",
+            bgcolor="rgba(245, 245, 220, 0.9)",
             bordercolor="black",
-            borderwidth=1
+            borderwidth=1,
+            borderpad=8
         )
         
         return fig
@@ -224,6 +281,7 @@ class WellLogDependenceAnalyzer:
         """Crea rank plot (P-P plot) en espacio uniforme"""
         u = stats.rankdata(self.data_clean[col1]) / (len(self.data_clean) + 1)
         v = stats.rankdata(self.data_clean[col2]) / (len(self.data_clean) + 1)
+        dep = self.calculate_dependence_measures(col1, col2)
         
         fig = go.Figure()
         
@@ -253,10 +311,27 @@ class WellLogDependenceAnalyzer:
             yaxis=dict(range=[0, 1])
         )
         
+        # Añadir medidas de dependencia
+        annotation_text = (
+            f"Kendall τ = {dep['Kendall_tau']:.4f}<br>"
+            f"Spearman ρ = {dep['Spearman_rho']:.4f}"
+        )
+        
+        fig.add_annotation(
+            x=0.02, y=0.98,
+            xref="paper", yref="paper",
+            text=annotation_text,
+            showarrow=False,
+            font=dict(size=10),
+            bgcolor="rgba(245, 245, 220, 0.9)",
+            bordercolor="black",
+            borderwidth=1
+        )
+        
         return fig
     
     def create_heatmap(self, correlation_type='spearman', figsize=(10, 8)):
-        """Crea heatmap de correlación con matplotlib (para mayor control)"""
+        """Crea heatmap de correlación con matplotlib"""
         if not self.correlation_matrices:
             self.compute_correlation_matrices()
         
@@ -293,6 +368,28 @@ class WellLogDependenceAnalyzer:
         
         plt.tight_layout()
         return fig
+    
+    def compute_correlation_matrices(self):
+        """Calcula matrices de correlación"""
+        n = len(self.available_cols)
+        pearson_matrix = np.zeros((n, n))
+        spearman_matrix = np.zeros((n, n))
+        kendall_matrix = np.zeros((n, n))
+        
+        for i, col1 in enumerate(self.available_cols):
+            for j, col2 in enumerate(self.available_cols):
+                dep = self.calculate_dependence_measures(col1, col2)
+                pearson_matrix[i, j] = dep['Pearson_r']
+                spearman_matrix[i, j] = dep['Spearman_rho']
+                kendall_matrix[i, j] = dep['Kendall_tau']
+        
+        self.correlation_matrices = {
+            'pearson': pearson_matrix,
+            'spearman': spearman_matrix,
+            'kendall': kendall_matrix
+        }
+        
+        return pearson_matrix, spearman_matrix, kendall_matrix
     
     def create_pairplot_matrix(self, selected_cols, sample_size=500):
         """Crea matriz de dispersión interactiva con Plotly"""
@@ -511,45 +608,64 @@ def main():
             with col3:
                 add_regression = st.checkbox("Mostrar regresión", value=True)
                 add_density = st.checkbox("Mostrar densidad", value=True)
+                use_plotly = st.checkbox("Modo interactivo", value=True)
             
             if var_x and var_y:
-                fig_scatter = analyzer.create_scatter_plot(var_x, var_y, add_regression, add_density)
-                st.plotly_chart(fig_scatter, use_container_width=True)
+                # Mostrar medidas de dependencia destacadas
+                dep = analyzer.calculate_dependence_measures(var_x, var_y)
+                
+                # Métricas destacadas en la parte superior
+                st.markdown("### 📊 Medidas de Dependencia")
+                col_metrics = st.columns(4)
+                with col_metrics[0]:
+                    st.metric("Pearson r", f"{dep['Pearson_r']:.4f}", 
+                             delta=f"R² = {dep['Pearson_R2']:.4f}")
+                with col_metrics[1]:
+                    st.metric("Spearman ρ", f"{dep['Spearman_rho']:.4f}")
+                with col_metrics[2]:
+                    st.metric("Kendall τ", f"{dep['Kendall_tau']:.4f}")
+                with col_metrics[3]:
+                    diff = abs(dep['Spearman_rho'] - dep['Pearson_r'])
+                    st.metric("|Spearman - Pearson|", f"{diff:.4f}",
+                             delta="No-linealidad" if diff > 0.2 else "Lineal")
+                
+                # Scatter plot con títulos claros
+                if use_plotly:
+                    fig_scatter = analyzer.create_scatter_plot_plotly(var_x, var_y, add_regression, add_density)
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+                else:
+                    fig_scatter = analyzer.create_scatter_plot_matplotlib(var_x, var_y, add_regression, add_density)
+                    st.pyplot(fig_scatter)
                 
                 # Rank plot
                 st.markdown("### 📊 Rank Plot (Espacio Uniforme)")
                 fig_rank = analyzer.create_rank_plot(var_x, var_y)
                 st.plotly_chart(fig_rank, use_container_width=True)
                 
-                # Mostrar medidas de dependencia
-                dep = analyzer.calculate_dependence_measures(var_x, var_y)
-                st.markdown("### 📈 Medidas de Dependencia")
-                
-                col_metrics = st.columns(4)
-                with col_metrics[0]:
-                    st.metric("Pearson r", f"{dep['Pearson_r']:.4f}")
-                with col_metrics[1]:
-                    st.metric("Spearman ρ", f"{dep['Spearman_rho']:.4f}")
-                with col_metrics[2]:
-                    st.metric("Kendall τ", f"{dep['Kendall_tau']:.4f}")
-                with col_metrics[3]:
-                    st.metric("R²", f"{dep['Pearson_R2']:.4f}")
-                
                 # Interpretación
                 st.markdown("### 💡 Interpretación")
                 non_linearity = abs(dep['Spearman_rho'] - dep['Pearson_r'])
                 
-                if non_linearity > 0.2:
-                    st.warning(f"⚠️ Posible relación no lineal detectada (|Spearman - Pearson| = {non_linearity:.3f} > 0.2)")
-                else:
-                    st.info(f"✅ Relación principalmente lineal (|Spearman - Pearson| = {non_linearity:.3f})")
+                col_interpret = st.columns(3)
+                with col_interpret[0]:
+                    if non_linearity > 0.2:
+                        st.warning(f"⚠️ Posible relación no lineal detectada")
+                    else:
+                        st.info(f"✅ Relación principalmente lineal")
                 
-                if abs(dep['Kendall_tau']) > 0.7:
-                    st.success("✅ Fuerte concordancia entre las variables")
-                elif abs(dep['Kendall_tau']) > 0.3:
-                    st.info("📊 Concordancia moderada entre las variables")
-                else:
-                    st.warning("⚠️ Débil concordancia entre las variables")
+                with col_interpret[1]:
+                    if abs(dep['Kendall_tau']) > 0.7:
+                        st.success("✅ Fuerte concordancia")
+                    elif abs(dep['Kendall_tau']) > 0.3:
+                        st.info("📊 Concordancia moderada")
+                    else:
+                        st.warning("⚠️ Débil concordancia")
+                
+                with col_interpret[2]:
+                    if dep['Pearson_p'] < 0.05:
+                        st.success(f"✅ Significativo (p={dep['Pearson_p']:.4e})")
+                    else:
+                        st.warning(f"⚠️ No significativo (p={dep['Pearson_p']:.4e})")
         
         # Tab 2: Matriz de Correlación
         with tab2:
@@ -644,7 +760,6 @@ def main():
             st.markdown("### 📈 Resumen de Correlaciones (Top 10)")
             corr_summary = analyzer.get_correlation_summary()
             if not corr_summary.empty:
-                # Ordenar por valor absoluto de Spearman
                 corr_summary['abs_Spearman'] = corr_summary['Spearman'].abs()
                 corr_summary = corr_summary.sort_values('abs_Spearman', ascending=False).head(10)
                 corr_summary = corr_summary.drop('abs_Spearman', axis=1)
