@@ -1,12 +1,12 @@
 """
 Streamlit App para Análisis de Dependencia en Datos de Pozo
 ===========================================================
-Con Simulación de Escenarios con Incertidumbre Conjunta (SCBC)
+Con regresión cuantil basada en cópulas, estimación multivariada y SCBC
+VERSIÓN COMPLETA CORREGIDA
 """
 
 import subprocess
 import sys
-import importlib.metadata
 
 # Verificar e instalar dependencias faltantes
 required_packages = {
@@ -20,9 +20,6 @@ required_packages = {
     'scikit-learn': 'scikit-learn'
 }
 
-installed_packages = {pkg: True for pkg in required_packages.keys()}
-
-# Intentar importar cada paquete
 for pkg, import_name in required_packages.items():
     try:
         __import__(import_name)
@@ -31,7 +28,7 @@ for pkg, import_name in required_packages.items():
         subprocess.check_call([sys.executable, "-m", "pip", "install", import_name])
         print(f"{import_name} instalado correctamente")
 
-# Ahora importar todas las librerías
+# Importar librerías
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -138,6 +135,10 @@ def interpret_copula(cop):
     return ""
 
 
+# ============================================================================
+# CLASE MULTIVARIATE SIMULATOR (SCBC)
+# ============================================================================
+
 class MultivariateSimulator:
     """
     Clase para Simulación de Escenarios con Incertidumbre Conjunta (SCBC)
@@ -200,23 +201,6 @@ class MultivariateSimulator:
                              preserve_marginals=True, return_original_scale=True):
         """
         Genera múltiples realizaciones preservando la dependencia multivariante
-        
-        Parameters:
-        -----------
-        n_realizations : int
-            Número de realizaciones (escenarios) a generar
-        n_samples : int
-            Número de muestras por realización (None = mismo que datos originales)
-        method : str
-            Método de simulación: 'gaussian_copula', 'pca_gaussian', 'kde_sampling'
-        preserve_marginals : bool
-            Preservar las distribuciones marginales originales
-        return_original_scale : bool
-            Retornar en escala original
-        
-        Returns:
-        --------
-        dict : Diccionario con las realizaciones y estadísticas
         """
         if n_samples is None:
             n_samples = len(self.data)
@@ -244,7 +228,9 @@ class MultivariateSimulator:
                 else:
                     sim_data = u_sim
                 
-                realizations.append(pd.DataFrame(sim_data, columns=self.available_cols))
+                df_sim = pd.DataFrame(sim_data, columns=self.available_cols)
+                df_sim.attrs['method'] = method
+                realizations.append(df_sim)
         
         elif method == 'pca_gaussian':
             # Simular usando PCA + cópula Gaussiana en espacio reducido
@@ -278,7 +264,9 @@ class MultivariateSimulator:
                 else:
                     sim_data = data_original_scale
                 
-                realizations.append(pd.DataFrame(sim_data, columns=self.available_cols))
+                df_sim = pd.DataFrame(sim_data, columns=self.available_cols)
+                df_sim.attrs['method'] = method
+                realizations.append(df_sim)
         
         elif method == 'kde_sampling':
             # Simular usando KDE multivariado (bootstrap con dependencia)
@@ -292,7 +280,9 @@ class MultivariateSimulator:
                 for j in range(sim_data.shape[1]):
                     sim_data[:, j] += np.random.normal(0, np.std(self.data.iloc[:, j]) * noise_scale, n_samples)
                 
-                realizations.append(pd.DataFrame(sim_data, columns=self.available_cols))
+                df_sim = pd.DataFrame(sim_data, columns=self.available_cols)
+                df_sim.attrs['method'] = method
+                realizations.append(df_sim)
         
         # Calcular estadísticas de las realizaciones
         stats_summary = self._calculate_realization_stats(realizations)
@@ -336,56 +326,62 @@ class MultivariateSimulator:
         # Mostrar un subconjunto de realizaciones
         n_show = min(n_show, len(realizations))
         
+        # Crear un índice ordenado para todas las realizaciones
+        n_points = len(realizations[0][variable])
+        x_index = np.arange(n_points)
+        
         for i in range(n_show):
+            # Obtener datos ordenados de la realización
+            y_values = np.sort(realizations[i][variable].values)
+            
             fig.add_trace(go.Scatter(
-                y=realizations[i][variable].sort_values().values,
+                x=x_index,
+                y=y_values,
                 mode='lines',
-                line=dict(width=1, opacity=0.5),
+                line=dict(width=1, color=f'rgba(100,100,100,0.3)'),
                 name=f'Realización {i+1}',
                 showlegend=False
             ))
         
         # Añadir estadísticas de los datos originales
-        original_data = self.data[variable].sort_values().values
+        original_sorted = np.sort(self.data[variable].values)
         fig.add_trace(go.Scatter(
-            y=original_data,
+            x=x_index,
+            y=original_sorted,
             mode='lines',
             line=dict(color='red', width=3),
             name='Datos Originales'
         ))
         
-        # Añadir percentiles
-        all_simulated = np.column_stack([r[variable].values for r in realizations])
+        # Añadir percentiles de las realizaciones
+        all_simulated = np.column_stack([np.sort(r[variable].values) for r in realizations])
         p5 = np.percentile(all_simulated, 5, axis=1)
         p95 = np.percentile(all_simulated, 95, axis=1)
         median = np.percentile(all_simulated, 50, axis=1)
         
         fig.add_trace(go.Scatter(
+            x=x_index,
             y=median,
             mode='lines',
             line=dict(color='green', width=2, dash='dash'),
             name='Mediana (P50)'
         ))
         
+        # Añadir banda de incertidumbre (P5-P95)
         fig.add_trace(go.Scatter(
-            y=p5,
-            mode='lines',
-            line=dict(color='lightgreen', width=1),
-            name='P5',
-            showlegend=False
+            x=np.concatenate([x_index, x_index[::-1]]),
+            y=np.concatenate([p5, p95[::-1]]),
+            fill='toself',
+            fillcolor='rgba(144,238,144,0.3)',
+            line=dict(color='rgba(0,0,0,0)'),
+            name='P5-P95',
+            showlegend=True
         ))
         
-        fig.add_trace(go.Scatter(
-            y=p95,
-            mode='lines',
-            line=dict(color='lightgreen', width=1),
-            name='P95',
-            fill='tonexty',
-            fillcolor='rgba(144,238,144,0.2)'
-        ))
+        method_name = realizations[0].attrs.get('method', 'SCBC') if hasattr(realizations[0], 'attrs') else 'SCBC'
         
         fig.update_layout(
-            title=f'Realizaciones Simuladas - {variable}<br>Método: {realizations[0].attrs.get("method", "SCBC")}',
+            title=f'Realizaciones Simuladas - {variable}<br>Método: {method_name}',
             xaxis_title='Índice (ordenado)',
             yaxis_title=variable,
             height=500,
@@ -421,8 +417,10 @@ class MultivariateSimulator:
                 showlegend=False
             ))
         
+        method_name = realizations[0].attrs.get('method', 'SCBC') if hasattr(realizations[0], 'attrs') else 'SCBC'
+        
         fig.update_layout(
-            title=f'Simulación Multivariada: {var1} vs {var2}<br>Método: {realizations[0].attrs.get("method", "SCBC")}',
+            title=f'Simulación Multivariada: {var1} vs {var2}<br>Método: {method_name}',
             xaxis_title=var1,
             yaxis_title=var2,
             height=500,
@@ -440,78 +438,95 @@ class MultivariateSimulator:
         # Ordenar por profundidad si existe
         if 'DEPTH' in self.data.columns or 'Depth' in self.data.columns:
             depth_col = 'DEPTH' if 'DEPTH' in self.data.columns else 'Depth'
-            x_axis = depth_col
-            
-            # Ordenar por profundidad
             depth_data = self.data[depth_col].values
             idx = np.argsort(depth_data)
-            
-            all_simulated = np.column_stack([r[variable].values for r in realizations])
-            all_simulated_sorted = all_simulated[idx, :]
             depth_sorted = depth_data[idx]
+            
+            # Ordenar todas las realizaciones por profundidad
+            all_simulated = np.zeros((len(depth_sorted), len(realizations)))
+            for i, r in enumerate(realizations):
+                # Alinear con profundidad
+                if len(r) == len(depth_data):
+                    r_sorted = r[variable].values[idx]
+                    all_simulated[:, i] = r_sorted
+                else:
+                    r_sorted = np.sort(r[variable].values)
+                    all_simulated[:, i] = np.interp(np.linspace(0, 1, len(depth_sorted)), 
+                                                    np.linspace(0, 1, len(r_sorted)), 
+                                                    r_sorted)
         else:
-            x_axis = 'Índice'
             depth_sorted = np.arange(len(self.data))
-            all_simulated_sorted = np.column_stack([r[variable].values for r in realizations])
+            all_simulated = np.column_stack([np.sort(r[variable].values) for r in realizations])
         
         # Calcular percentiles
-        percentiles = [5, 10, 25, 50, 75, 90, 95]
-        colors = ['rgba(144,238,144,0.1)', 'rgba(144,238,144,0.2)', 'rgba(144,238,144,0.3)',
-                  'rgba(144,238,144,0.4)', 'rgba(144,238,144,0.3)', 'rgba(144,238,144,0.2)', 
-                  'rgba(144,238,144,0.1)']
+        p5 = np.percentile(all_simulated, 5, axis=1)
+        p25 = np.percentile(all_simulated, 25, axis=1)
+        p50 = np.percentile(all_simulated, 50, axis=1)
+        p75 = np.percentile(all_simulated, 75, axis=1)
+        p95 = np.percentile(all_simulated, 95, axis=1)
         
-        # Añadir bandas de incertidumbre
-        for i, p in enumerate(percentiles):
-            lower = np.percentile(all_simulated_sorted, 100-p, axis=1)
-            upper = np.percentile(all_simulated_sorted, p, axis=1)
-            
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([depth_sorted, depth_sorted[::-1]]),
-                y=np.concatenate([lower, upper[::-1]]),
-                fill='toself',
-                fillcolor=colors[i],
-                line=dict(color='rgba(255,255,255,0)'),
-                name=f'P{p} - P{100-p}',
-                showlegend=False
-            ))
+        # Añadir banda P5-P95 (más externa)
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([depth_sorted, depth_sorted[::-1]]),
+            y=np.concatenate([p5, p95[::-1]]),
+            fill='toself',
+            fillcolor='rgba(144,238,144,0.2)',
+            line=dict(color='rgba(0,0,0,0)'),
+            name='P5-P95',
+            showlegend=True
+        ))
+        
+        # Añadir banda P25-P75 (interna)
+        fig.add_trace(go.Scatter(
+            x=np.concatenate([depth_sorted, depth_sorted[::-1]]),
+            y=np.concatenate([p25, p75[::-1]]),
+            fill='toself',
+            fillcolor='rgba(100,200,100,0.4)',
+            line=dict(color='rgba(0,0,0,0)'),
+            name='P25-P75',
+            showlegend=True
+        ))
         
         # Añadir mediana
-        median = np.percentile(all_simulated_sorted, 50, axis=1)
         fig.add_trace(go.Scatter(
-            x=depth_sorted, y=median,
+            x=depth_sorted, y=p50,
             mode='lines',
             line=dict(color='green', width=2),
             name='Mediana (P50)'
         ))
         
         # Añadir datos originales
-        original_data = self.data[variable].values
-        if x_axis == 'Índice':
-            original_data_sorted = np.sort(original_data)
-            depth_sorted_plot = np.arange(len(original_data))
+        if 'DEPTH' in self.data.columns or 'Depth' in self.data.columns:
+            original_data = self.data[variable].values[idx]
+            fig.add_trace(go.Scatter(
+                x=depth_sorted, y=original_data,
+                mode='lines+markers',
+                line=dict(color='red', width=2),
+                marker=dict(size=4),
+                name='Datos Originales'
+            ))
         else:
-            depth_data = self.data[depth_col].values
-            idx_orig = np.argsort(depth_data)
-            original_data_sorted = original_data[idx_orig]
-            depth_sorted_plot = depth_data[idx_orig]
+            original_sorted = np.sort(self.data[variable].values)
+            fig.add_trace(go.Scatter(
+                x=np.arange(len(original_sorted)), y=original_sorted,
+                mode='lines+markers',
+                line=dict(color='red', width=2),
+                marker=dict(size=4),
+                name='Datos Originales'
+            ))
         
-        fig.add_trace(go.Scatter(
-            x=depth_sorted_plot, y=original_data_sorted,
-            mode='lines+markers',
-            line=dict(color='red', width=2),
-            marker=dict(size=4),
-            name='Datos Originales'
-        ))
+        method_name = realizations[0].attrs.get('method', 'SCBC') if hasattr(realizations[0], 'attrs') else 'SCBC'
+        x_title = 'Profundidad' if ('DEPTH' in self.data.columns or 'Depth' in self.data.columns) else 'Índice'
         
         fig.update_layout(
-            title=f'Gráfico de Abanico (Fan Chart) - {variable}<br>Incertidumbre Conjunta',
-            xaxis_title=x_axis,
+            title=f'Gráfico de Abanico (Fan Chart) - {variable}<br>Incertidumbre Conjunta - Método: {method_name}',
+            xaxis_title=x_title,
             yaxis_title=variable,
             height=500,
             showlegend=True
         )
         
-        if x_axis != 'Índice':
+        if 'DEPTH' in self.data.columns or 'Depth' in self.data.columns:
             fig.update_yaxes(autorange='reversed')
         
         return fig
@@ -550,6 +565,10 @@ class MultivariateSimulator:
         plt.tight_layout()
         return fig
 
+
+# ============================================================================
+# CLASE MULTIVARIATE COPULA ESTIMATOR
+# ============================================================================
 
 class MultivariateCopulaEstimator:
     """
@@ -634,6 +653,10 @@ class MultivariateCopulaEstimator:
         
         return y_pred_ensemble, models
 
+
+# ============================================================================
+# CLASE COPULA QUANTILE REGRESSION
+# ============================================================================
 
 class CopulaQuantileRegression:
     """
@@ -848,6 +871,10 @@ class CopulaQuantileRegression:
             return u * v
         return -1/theta * np.log(1 + (np.exp(-theta*u) - 1) * (np.exp(-theta*v) - 1) / (np.exp(-theta) - 1))
 
+
+# ============================================================================
+# CLASE WELL LOG DEPENDENCE ANALYZER
+# ============================================================================
 
 class WellLogDependenceAnalyzer:
     """
@@ -1358,8 +1385,7 @@ class WellLogDependenceAnalyzer:
         
         return fig
     
-    # Métodos para SCBC (Simulación de Escenarios con Incertidumbre Conjunta)
-    
+    # Métodos para SCBC
     def initialize_simulator(self):
         """Inicializa el simulador multivariado"""
         self.simulator = MultivariateSimulator(self.data_clean)
@@ -1372,14 +1398,6 @@ class WellLogDependenceAnalyzer:
         if self.simulator is None:
             self.initialize_simulator()
         
-        # Ajustar el modelo de simulación
-        if method == 'gaussian_copula':
-            self.simulator.fit_gaussian_copula_multivariate()
-        elif method == 'pca_gaussian':
-            self.simulator.fit_vine_copula('pca')
-        elif method == 'kde_sampling':
-            pass  # No necesita ajuste previo
-        
         # Generar realizaciones
         results = self.simulator.simulate_realizations(
             n_realizations=n_realizations,
@@ -1391,6 +1409,10 @@ class WellLogDependenceAnalyzer:
         
         return results
 
+
+# ============================================================================
+# DATOS SINTÉTICOS
+# ============================================================================
 
 def create_synthetic_data():
     """Crea datos sintéticos para demostración con relaciones multivariadas realistas"""
@@ -1500,7 +1522,7 @@ def main():
             "📋 Tabla de Dependencias"
         ])
         
-        # Tab 1: Scatter Plot con Regresión Cuantil (igual que antes)
+        # Tab 1: Scatter Plot con Regresión Cuantil
         with tab1:
             st.markdown('<div class="sub-header">📈 Scatter Plot con Regresión Cuantil basada en Cópulas</div>', unsafe_allow_html=True)
             
@@ -1587,7 +1609,7 @@ def main():
                 {interpret_copula(cop)}
                 """)
         
-        # Tab 2: Estimación Multivariada (igual que antes)
+        # Tab 2: Estimación Multivariada
         with tab2:
             st.markdown('<div class="sub-header">🎯 Estimación Multivariada de Propiedades</div>', unsafe_allow_html=True)
             st.markdown("""
